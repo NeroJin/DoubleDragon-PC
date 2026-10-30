@@ -432,3 +432,113 @@ run46 抓到**同一坏值被从很多不同调用点调用**，且 `r3/r31` 恒
 - 因此：挂好资源目录后，游戏大概率**仍会**走到 `0x40D016D0` 那一关。
 - 届时 build46 自带的陷阱会在命中 `<0x82000000` 的非法间接调用时写出
   `D:/Projects/DoubleDragon/trap_dump.txt` 并 `_exit(2)`——把该文件贴回即可继续定位。
+
+## 12. 黑屏真正根因：`gpu_plugin` 为空 = 完全没有 GPU 模拟（已修复）
+
+第 11 节修好资源挂载后，程序能起来但**全黑**。本节是它的根因，以及修好之后暴露出的下一关。
+
+### 12.1 用分段探针定位（这是本轮最有效的手段）
+
+在每帧上屏函数 `sub_8212C520` 内部按里程碑插 `midasm_hook`（写 `heartbeat.log`，
+因为 GUI 子系统在无头/双击场景下没有控制台，stderr 会丢）：
+
+```
+FRAME_BEGIN#0 → PRESENT#0 → SWAP_IN → SWAP_OUT → PRESENT_EXIT → FRAME_END   ✅ 完整
+FRAME_BEGIN#1 → PRESENT#1 → SWAP_IN → SWAP_OUT → ✗ 之后什么都没有
+```
+
+第 2 帧的 `VdSwap` **已经返回**（`SWAP_OUT` 有），但 `sub_8212C520` 没走到出口
+（`PRESENT_EXIT` 没有）——所以不是上屏死锁，而是上屏**之后**的代码卡住。
+
+继续二分（`Q1..Q4`、`R1..R7`），最终落在：
+
+```
+Q1 (sub_82134F40 返回) ✅
+Q2 (sub_8213ABF0 返回) ✅
+R5 (sub_821340B8 返回) ✅
+R7 (sub_82134910 返回) ✗ ← 卡在 sub_82134910 内部
+```
+
+### 12.2 根因：等 GPU 的自旋循环无人推进
+
+`sub_82134910` 本质是一个**等 GPU 消费命令缓冲**的忙等循环：
+
+```asm
+loc_82134998:
+  bl  sub_82122D98            ; 查 GPU 进度
+  cmpwi r3,0
+  beq loc_821349C4            ; 返回 0 → 停止等待
+loc_821349A8:
+  ; 比较 写指针 *(r31+10780) 与 已消费 *(*(r31+10768))
+  blt → 回到 loc_82134998     ; 还没消费完 → 继续转
+```
+
+而 `sub_82122D98` 里的进度来源是：
+
+```asm
+  lwz r10,256(r13)      ; KPCR/TLS 区
+  lwz r30,88(r10)       ; ← GPU 侧更新的进度计数器
+  ...
+  subf r11,r11,r30
+  cmplwi cr6,r11,5000   ; 进度差 < 5000 → 返回 1，继续等
+```
+
+关键证据：**进程根本没加载 GPU 插件 DLL**。
+
+```
+PID=25936 Threads=24 CPU=8.4  WS=212MB
+modules: rexruntime.dll, dxgi.dll, d3d11.dll      ← 没有 rexgpu-xenos.dll
+```
+
+没有 GPU 模拟 → 命令缓冲无人消费 → 进度计数器永不前进 → 第 2 帧起永久自旋
+（CPU 140%，纯空转），画面当然全黑。
+
+`rex/runtime.h` 里写得很直白：
+
+```cpp
+struct RuntimeConfig {
+  // GPU emulation plugin loaded by ReXApp when `graphics` is empty
+  // (e.g. "xenos"); empty means no GPU emulation.
+  std::string gpu_plugin;
+```
+
+CMake 的 `rexglue_setup_target(DoubleDragon GPU_PLUGINS xenos)` **只负责把
+`rexgpu-xenos.dll` 拷到 exe 旁边**，运行时不会自动去加载，必须在 `OnPreSetup`
+里显式填插件名。而 `DoubleDragon_app.h` 此前从未重写 `OnPreSetup`。
+
+### 12.3 修复
+
+`src/DoubleDragon_app.h`：
+
+```cpp
+void OnPreSetup(rex::RuntimeConfig& config) override {
+  config.gpu_plugin = "xenos";
+}
+```
+
+实测效果（无头沙箱，同一份资源）：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 上屏帧数 | 2 帧后死等 | **1390 帧**持续渲染 |
+| CPU | 140% 空转 | 正常渲染负载 |
+| 行为 | 黑屏永久挂起 | 跑起来，随后在 JPEG 解码处崩 |
+
+### 12.4 修完后暴露的下一关：JPEG 扫描器 host AV
+
+跑约 1390 帧后崩溃（host 直接 0xC0000005，不是 guest FATAL）：
+
+```
+host: code=0xC0000005
+guest: lr=0x82186530 r3=0x7018E800 r4=0x0000FEF0 r9=0x0000FEFE r10=0xED
+in-function: sub_82186528 + 0x283
+```
+
+`sub_82186528` 是 JPEG 标记扫描器，输入流是 `*(obj+24)` 的子结构
+`{base@+0, size@+4, ..., refill@+12}`。崩溃时 `base/size` 是 `0x0000FEF0`
+这类被截断的垃圾值（像高 16 位丢失），扫描器随后 `lbz 0(r30)` 命中未映射页。
+
+修复（已实现，待验证）：在 `sub_82186528` 入口做输入流体检——`{base,size}`
+用 `GuestRangeReadable` 判定不可读时把 `size` 清零，扫描器第一轮就会走
+`loc_82186544` 的 `size==0` 分支先调 refill 回调，不再从坏指针取字节。
+（`heartbeat.log` 里会留下 `FIXSTREAM base=... size=...` 记录。）

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <atomic>
 
 #include <windows.h>
 
@@ -95,6 +96,314 @@ void DumpObject(rex::memory::Memory* mem, uint32_t obj) {
 }
 
 }  // namespace
+
+// ============ 黑屏/挂起诊断：心跳探针（写文件，不依赖控制台） ============
+//
+// 判别逻辑（强退后读 heartbeat.log）：
+//   - 出现 PRESENT 行且计数只到几次就停 → 卡在 D3D12 presenter 内部（宿主侧上屏挂起）
+//   - PRESENT 计数持续猛涨 → 一直在 present 但画面黑（逻辑在跑/资源没画出来）
+//   - 一条 PRESENT 都没有 → 首帧前就挂（初始化/加载死循环）
+//   - 只有 DECODE 在刷、PRESENT 没有 → 卡在图像解码死循环
+static FILE* HbOpen() {
+  return std::fopen("D:/Projects/DoubleDragon/heartbeat.log", "a");
+}
+static void HbMarkStart() {
+  static std::atomic<int> started{0};
+  int expected = 0;
+  if (started.compare_exchange_strong(expected, 1)) {
+    FILE* fp = std::fopen("D:/Projects/DoubleDragon/heartbeat.log", "w");  // 截断
+    if (fp) {
+      std::fprintf(fp, "=== heartbeat session start (ms=GetTickCount64) ===\n");
+      std::fflush(fp);
+      std::fclose(fp);
+    }
+  }
+}
+static void HbLog(const char* tag, uint32_t a, uint32_t b) {
+  HbMarkStart();
+  uint64_t ms = ::GetTickCount64();
+  FILE* fp = HbOpen();
+  if (!fp) return;
+  std::fprintf(fp, "[%llu] %s a=0x%08X b=0x%08X\n", (unsigned long long)ms,
+               tag, a, b);
+  std::fflush(fp);
+  std::fclose(fp);
+}
+
+// sub_8212C520 入口（内部调 VdSwap 上屏）。a=调用序号 b=调用者 lr。
+void DoubleDragon_PresentHeartbeat(PPCRegister& r3) {
+  (void)r3;
+  auto* ts = rex::runtime::ThreadState::Get();
+  if (!ts) return;
+  auto* ctx = ts->context();
+  static std::atomic<long> n{0};
+  long cur = n.fetch_add(1);
+  if (cur < 5 || (cur % 30) == 0) {
+    HbLog("PRESENT", (uint32_t)cur, (uint32_t)ctx->lr);
+  }
+}
+
+// sub_821852A0 入口（UI 派发，极热）。a=派发键 r27 b=对象 r31。
+void DoubleDragon_DispatchHeartbeat(PPCRegister& r31) {
+  auto* ts = rex::runtime::ThreadState::Get();
+  if (!ts) return;
+  auto* ctx = ts->context();
+  static std::atomic<long> n{0};
+  long cur = n.fetch_add(1);
+  if (cur < 5 || (cur % 2000) == 0) {
+    HbLog("DISPATCH", (uint32_t)ctx->r27.u32, (uint32_t)r31.u32);
+  }
+}
+
+// ---- 上屏流程分段探针 ----
+// 目的：区分"卡在 VdSwap 内部"和"VdSwap 返回后卡在帧循环外"。
+//   0x8212C76C  bl VdSwap（进入宿主上屏）
+//   0x8212C770  VdSwap 返回后的第一条指令
+//   0x8212CAB0  sub_8212C520 的 epilogue（整个 present 函数返回）
+//   0x8212CAB8  帧函数 sub_8212CAB8 入口
+//   0x8212CBD8  帧函数 sub_8212CAB8 返回处
+void DoubleDragon_PresentEnterSwap(PPCRegister& r3) {
+  (void)r3;
+  auto* ts = rex::runtime::ThreadState::Get();
+  if (!ts) return;
+  static std::atomic<long> n{0};
+  HbLog("SWAP_IN", (uint32_t)n.fetch_add(1), (uint32_t)ts->context()->lr);
+}
+
+void DoubleDragon_PresentLeaveSwap(PPCRegister& r3) {
+  (void)r3;
+  auto* ts = rex::runtime::ThreadState::Get();
+  if (!ts) return;
+  static std::atomic<long> n{0};
+  HbLog("SWAP_OUT", (uint32_t)n.fetch_add(1), 0);
+}
+
+void DoubleDragon_PresentFuncExit(PPCRegister& r3) {
+  (void)r3;
+  auto* ts = rex::runtime::ThreadState::Get();
+  if (!ts) return;
+  static std::atomic<long> n{0};
+  HbLog("PRESENT_EXIT", (uint32_t)n.fetch_add(1), 0);
+}
+
+void DoubleDragon_FrameBegin(PPCRegister& r3) {
+  (void)r3;
+  auto* ts = rex::runtime::ThreadState::Get();
+  if (!ts) return;
+  static std::atomic<long> n{0};
+  long cur = n.fetch_add(1);
+  if (cur < 10 || (cur % 60) == 0) HbLog("FRAME_BEGIN", (uint32_t)cur, 0);
+}
+
+void DoubleDragon_FrameEnd(PPCRegister& r3) {
+  (void)r3;
+  auto* ts = rex::runtime::ThreadState::Get();
+  if (!ts) return;
+  static std::atomic<long> n{0};
+  long cur = n.fetch_add(1);
+  if (cur < 10 || (cur % 60) == 0) HbLog("FRAME_END", (uint32_t)cur, 0);
+}
+
+// ---- 上屏函数内部分段探针（二分定位卡点） ----
+// 第 2 帧 VdSwap 已返回但 sub_8212C520 未走到出口，逐个里程碑打点。
+#define DD_WATCHPOINT(fn, tag)                              \
+  void fn(PPCRegister& r3) {                                \
+    (void)r3;                                               \
+    auto* ts = rex::runtime::ThreadState::Get();            \
+    if (!ts) return;                                        \
+    static std::atomic<long> n{0};                          \
+    long cur = n.fetch_add(1);                              \
+    if (cur < 4000) HbLog(tag, (uint32_t)cur, 0);           \
+  }
+
+DD_WATCHPOINT(DoubleDragon_W_SwapRet, "W1_swapret")
+DD_WATCHPOINT(DoubleDragon_W_P7E8, "W2_7e8")
+DD_WATCHPOINT(DoubleDragon_W_P80C, "W3_80c")
+DD_WATCHPOINT(DoubleDragon_W_P8F8, "W4_8f8")
+DD_WATCHPOINT(DoubleDragon_W_P974, "W5_974")
+DD_WATCHPOINT(DoubleDragon_W_P984, "W6_984")
+DD_WATCHPOINT(DoubleDragon_W_PAA0, "W7_aa0")
+DD_WATCHPOINT(DoubleDragon_W_PAAC, "W8_aac")
+// 第 2 帧卡在 0x8212C984..0x8212CAA0 之间：四个调用返回点
+DD_WATCHPOINT(DoubleDragon_W_Q1, "Q1_34F40ret")
+DD_WATCHPOINT(DoubleDragon_W_Q2, "Q2_3ABF0ret")
+DD_WATCHPOINT(DoubleDragon_W_Q3, "Q3_34C60ret")
+DD_WATCHPOINT(DoubleDragon_W_Q4, "Q4_34910ret")
+DD_WATCHPOINT(DoubleDragon_W_Q5, "Q5_CA7C")
+// sub_82134C60 内部：三个候选分配器 + 一次 82134910；以及 sub_82136B10 的锁路径
+DD_WATCHPOINT(DoubleDragon_W_R1, "R1_36B10in")
+DD_WATCHPOINT(DoubleDragon_W_R2, "R2_lock_acquired")
+DD_WATCHPOINT(DoubleDragon_W_R3, "R3_bctrl_ret")
+DD_WATCHPOINT(DoubleDragon_W_R4, "R4_lock_released")
+DD_WATCHPOINT(DoubleDragon_W_R5, "R5_340B8ret")
+DD_WATCHPOINT(DoubleDragon_W_R6, "R6_368C0ret")
+DD_WATCHPOINT(DoubleDragon_W_R7, "R7_34910ret2")
+
+// 判断 guest 地址是否真的可读。
+// 不能用 SEH 试探读：recomp 的 guest 线程上下文里 __except 真被触发时会直接
+// 崩掉进程（实测第一次探测到空洞就死，日志只剩 1 条 DECODE）。
+// 也不能只用 LookupHeap/QueryRangeAccess：它只看逻辑堆，0x4050FF13 这一带
+// 报"可访问"但宿主页并未提交。
+// 正解：TranslateVirtual 得到宿主指针后问 VirtualQuery 该页是否 MEM_COMMIT 且可读。
+bool ProbeReadable(rex::memory::Memory* mem, uint32_t addr) {
+  if (!mem || addr < 0x1000) return false;
+  const void* host = mem->TranslateVirtual<const void*>(addr);
+  if (!host) return false;
+  MEMORY_BASIC_INFORMATION mbi{};
+  if (::VirtualQuery(host, &mbi, sizeof(mbi)) == 0) return false;
+  if (mbi.State != MEM_COMMIT) return false;
+  const DWORD kReadable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                          PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                          PAGE_EXECUTE_WRITECOPY;
+  return (mbi.Protect & kReadable) != 0;
+}
+
+// 扫描 [base, base+limit) 找第一处不可读。
+// 注意不能只探尾部做二分：内存段中间可能有空洞（实测 0x4050FF13 之后
+// 0x40510000 处就是洞，但更远处 0x4117D303 又是可读的）。
+// 做法：64KB 粗扫 → 命中后 4KB 细扫 → 页内二分到字节。
+uint32_t ScanReadableEdge(rex::memory::Memory* mem, uint32_t base, uint32_t limit) {
+  constexpr uint32_t kPage = 0x1000;
+  constexpr uint32_t kCoarse = 0x10000;
+  uint32_t off = 0;
+  while (off < limit) {
+    uint32_t next = off + kCoarse;
+    if (next > limit) next = limit;
+    if (!ProbeReadable(mem, base + next - 1)) {
+      uint32_t p = off;
+      while (p < next) {
+        uint32_t pn = p + kPage;
+        if (pn > next) pn = next;
+        if (!ProbeReadable(mem, base + pn - 1)) {
+          uint32_t lo = p;   // base+lo 可读
+          uint32_t hi = pn;  // base+hi-1 不可读
+          while (hi - lo > 1) {
+            uint32_t mid = lo + (hi - lo) / 2;
+            if (ProbeReadable(mem, base + mid)) {
+              lo = mid;
+            } else {
+              hi = mid;
+            }
+          }
+          return lo + 1;
+        }
+        p = pn;
+      }
+    }
+    off = next;
+  }
+  return limit;
+}
+
+// 返回实际可读长度（0 表示一个字节都读不到）。
+uint32_t ClampReadableSize(rex::memory::Memory* mem, uint32_t base, uint32_t size) {
+  if (size == 0 || !ProbeReadable(mem, base)) return 0;
+  constexpr uint32_t kMaxProbe = 0x1000000u;  // 最多认 16MB
+  uint32_t limit = size > kMaxProbe ? kMaxProbe : size;
+  if (limit <= 1) return limit;
+  if (limit <= 0x10000 && ProbeReadable(mem, base + limit - 1)) return limit;  // 小 chunk 快路径
+  return ScanReadableEdge(mem, base, limit);
+}
+
+// 解码放弃标志：DecodeHeartbeat 判定输入流指针自身不可读时置位，
+// 由 sub_82186528 入口（生成的 .cpp 里）读取后直接 return 0。
+static std::atomic<bool> g_abort_decode{false};
+
+bool DD_TakeDecodeAbort() {
+  return g_abort_decode.exchange(false);
+}
+
+// sub_82186528 内部里程碑（S1 兼做 chunk 头守卫）
+void DoubleDragon_S1(PPCRegister& r3) {
+  (void)r3;
+  auto* ts = rex::runtime::ThreadState::Get();
+  if (!ts) return;
+  auto* c = ts->context();
+  // chunk 头守卫：扫描器从 base 逐字节读到 base+size。实测流结构被设成
+  // "一直读到 0x42F7D304"，而真实数据在 0x40510000 就到头，跨过边界即 host AV。
+  // 这里用真实试探读（SEH）确认可读边界，把 size 截断到边界；
+  // 一个字节都读不到时，把扫描指针换到对象自身（可读、首字节非 0/0xFF），
+  // 让它走 marker 分支正常 return 1，而不是把进程打死。
+  auto* mem = ts->memory();
+  if (!mem) return;
+  uint32_t base = c->r30.u32;
+  uint32_t size = c->r31.u32;
+  if (size == 0) return;
+  if (!ProbeReadable(mem, base)) {
+    c->r30.u32 = c->r27.u32 + 24;
+    c->r31.u32 = 1;
+    static std::atomic<long> g{0};
+    if (g.fetch_add(1) < 10) HbLog("FORCE_END", base, size);
+    return;
+  }
+  uint32_t readable = ClampReadableSize(mem, base, size);
+  c->r31.u32 = readable;
+  static std::atomic<long> f{0};
+  if (f.fetch_add(1) < 10) HbLog("CLAMP_CHUNK", base, readable);
+}
+
+DD_WATCHPOINT(DoubleDragon_S2, "S2_after_ff")
+DD_WATCHPOINT(DoubleDragon_S3, "S3_marker")
+DD_WATCHPOINT(DoubleDragon_S4, "S4_bctrl_ret")
+DD_WATCHPOINT(DoubleDragon_S5, "S5_ret1")
+DD_WATCHPOINT(DoubleDragon_S6, "S6_ret0")
+
+// sub_82186528 入口（JPEG 标记扫描器）。a=对象 r3 b=调用者 lr。
+//
+// 两层保护：
+//  1) *(obj+24) 流指针本身坏（实测会变成 0x0000FEF0 这类截断值）→ 函数接着
+//     就会 lwz r30,0(r29) 直接 AV，连栈都留不下。这里置 abort 标志，
+//     生成的函数体读到后立即 return 0（等价于"没有更多数据"）。
+//  2) 流结构可读但 size 是 0xFFF5F603 这类垃圾 → 截断到真实可读范围，
+//     避免扫描器 lbz 越界。
+void DoubleDragon_DecodeHeartbeat(PPCRegister& r3) {
+  auto* ts = rex::runtime::ThreadState::Get();
+  if (!ts) return;
+  auto* ctx = ts->context();
+  static std::atomic<long> n{0};
+  long cur = n.fetch_add(1);
+  if (cur < 5 || (cur % 500) == 0) {
+    HbLog("DECODE", (uint32_t)r3.u32, (uint32_t)ctx->lr);
+  }
+
+  auto* mem = ts->memory();
+  if (!mem || r3.u32 < 0x1000) return;
+  bool ok = false;
+  uint32_t stream = ReadGuestU32(mem, r3.u32 + 24, &ok);
+  if (!ok) return;
+
+  // 流结构自身必须可读（16 字节覆盖 base/size/..refill 回调）。
+  if (stream < 0x1000 || !GuestRangeReadable(mem, stream, 16)) {
+    g_abort_decode.store(true);
+    static std::atomic<long> a{0};
+    if (a.fetch_add(1) < 10) {
+      HbLog("ABORT_BADSTREAM", stream, r3.u32);
+    }
+    return;
+  }
+
+  uint32_t base = ReadGuestU32(mem, stream + 0, &ok);
+  if (!ok) return;
+  bool oks = false;
+  uint32_t size = ReadGuestU32(mem, stream + 4, &oks);
+  if (!oks || size == 0) return;  // 0 = 待 refill，交给回调
+
+  // 快路径：小的、首段可读的 size 直接放过（绝大多数情况）。
+  if (size <= 0x10000 && GuestRangeReadable(mem, base, size)) return;
+
+  uint32_t readable = ClampReadableSize(mem, base, size);
+  if (readable == size) return;
+  bool wok = false;
+  WriteGuestU32(mem, stream + 4, readable, &wok);
+  if (wok) {
+    static std::atomic<long> f{0};
+    if (f.fetch_add(1) < 8) {
+      static char tag[64];
+      std::snprintf(tag, sizeof(tag), "CLAMPSZ_%u", readable);
+      HbLog(tag, base, size);
+    }
+  }
+}
 
 // ============ 修复探针：JPEG 扫描器空缓冲优雅退出 ============
 //

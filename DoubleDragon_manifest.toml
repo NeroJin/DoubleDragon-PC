@@ -266,3 +266,35 @@ address = 0x8214B560
 name = "DoubleDragon_TraceFmtOk"
 registers = ["r30"]
 return = false
+
+# ---- 黑屏/挂起诊断：心跳探针（写 heartbeat.log，见 src/hooks.cpp） ----
+[[entrypoint.midasm_hook]]
+address = 0x8212C520
+name = "DoubleDragon_PresentHeartbeat"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x821852A0
+name = "DoubleDragon_DispatchHeartbeat"
+registers = ["r31"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82186528
+name = "DoubleDragon_DecodeHeartbeat"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8212CAB8
+name = "DoubleDragon_FrameBegin"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82186544
+name = "DoubleDragon_S1"
+registers = ["r3"]
+return = false
+
