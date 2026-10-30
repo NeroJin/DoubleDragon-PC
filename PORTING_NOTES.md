@@ -542,3 +542,132 @@ in-function: sub_82186528 + 0x283
 用 `GuestRangeReadable` 判定不可读时把 `size` 清零，扫描器第一轮就会走
 `loc_82186544` 的 `size==0` 分支先调 refill 回调，不再从坏指针取字节。
 （`heartbeat.log` 里会留下 `FIXSTREAM base=... size=...` 记录。）
+
+---
+
+## 13. 黑屏冻结 → 跑到标题（2026-10-30 晚，build69–77）
+
+用户现场：**"只有第一幅画面，然后黑屏"**。`heartbeat.log` 给出干净的分界：
+
+```
+PRESENT #0 … #136（约 7.5s，法务/logo 屏）   ← 之后再也没有 FRAME_BEGIN
+DECODE a=0x7018E800 × 5 万次（每秒数千次）    ← 帧循环再也不回来
+```
+
+即：**上屏流水线本身是好的，是 guest 主线程被 JPEG 解析器吃住了**。
+
+### 13.1 冻结根因：负数 size 的"数据流"被我们截断成可读，于是永不结束
+
+`sub_82186528`（标记扫描）的流结构 `{cur@+0, remain@+4, ..., refill@+12}`
+里，`refill` 回调 `sub_82147958` 只是把"预装块" `{+28,+32}` 搬进 `{+0,+4}`
+并**无条件 return 1**。真机上块耗尽时上层就不再装块，扫描器拿到 0 自然退出。
+
+实测 `size = 0xFFF5F603`（= **负数**，即 `end(0x400DC907) < cur(0x4017D304)`，
+说明这一路数据早就读到底了）。我们此前把负数 size "截断到可读范围"继续扫，
+解析器就永远找不到结束标记。
+
+修复：`DecodeHeartbeat` 判定 `size >= 0x80000000`（或 base 不可读）时置
+`g_abort_decode`，生成的 `sub_82186528` 入口读该标志后 **直接 return 0**
+（= 没有更多数据），整条解析链干净失败。另加"同一 base 连续 20 万次扫描"的
+兜底死循环检测。
+
+### 13.2 第二个雷：非 JPEG 数据进 JPEG 解码器 → `error_exit` → SEH 未模拟
+
+冻结解除后立刻暴露：
+
+```
+[FATAL] Call to invalid or unregistered function at guest address 0x40D016D0
+```
+
+`trap_dump.txt` 抓到的现场（第一次命中，不是被踩坏之后）：
+
+```
+obj=0x7018E800  cinfo.err=0x7018E9E0   error_exit=0x821478F0   ← 正常
+```
+
+即 `0x7018E800` 是 **jpeg_decompress_struct**，`err` 是内嵌的
+`jpeg_error_mgr`：`+0 error_exit / +4 emit_message / +8 output_message /
++12 format_message / +16 reset_error_mgr / +20 msg_code / +24 msg_parm`。
+（`sub_821852A0` 就是 libjpeg 的 huffman 符号查表：查不到 → 写 msg_code
+→ `bctrl *(err+0)`。）
+
+而 `error_exit = sub_821478F0` 的末尾是 `b 0x82395270`（C++ throw /
+unwind 包装），recomp 没有 SEH 展开 → 只能被 `DoubleDragon_FixThrow`
+短路成 no-op → 解码器带着毁掉的寄存器继续跑 → 把 `err+0` 写成数据指针
+`0x40D016D0` → 下一次 error_exit 就 FATAL。
+
+真正的触发条件很朴素：**格式嗅探器 `sub_8214B318` 按 `[0,5,4,1,3,…]`
+把同一块 PNG 数据也喂给了 fmt1 = JPEG 解码器**。真机上 JPEG 解码器
+FFD8 校验失败就抛异常、外层 catch 掉、接着试下一种格式。
+
+修复：在 `sub_821497F8`（JPEG 解码器入口）插入前置判断——头两字节不是
+`FF D8` 就**直接返回 `0x80004005`(E_FAIL)**，不进解码器。实测日志里
+`SKIP_JPEG buf=0x40D00060 hdr=0x89504E47`（PNG magic），随后 fmt3 正常解码。
+
+### 13.3 第三个雷：字节码 VM 的跳表目标从来没被生成
+
+下一个 FATAL：
+
+```
+[FATAL] Call to invalid or unregistered function at guest address 0x820D8018
+```
+
+陷阱抓到 `lr=0x820D7FF8`、`r3=0x820D799C`，而 `r3` 处的内存就是一张表：
+
+```
+0x820D799C: 820D7FF4 820D8018 820D8054 820D80B0 …（406 项，全部落在
+            0x820D7928..0x820E0BF8 这个"函数表空洞"里）
+```
+
+`0x820D7FF4` 起的 dispatcher 是典型的字节码 VM：
+
+```asm
+lwz   r31,0(r30)     ; 取操作码
+rlwinm r0,r31,2,21,29
+lwzx  r9,r25,r0      ; handler = table[opcode]
+mtctr r9 / bctr      ; 计算跳转
+```
+
+`bctr` 的目标静态不可见 → codegen 一个都没生成 → `bctr` 即 FATAL。
+
+修复（**manifest 驱动，可 reproducibly 重跑**）：
+`tools/` 里用脚本把跳表的 405 个不同目标（403 个 handler + dispatcher
+自身 + 两个内部分支点）写进 `[entrypoint.functions]`，再 `rexglue codegen`。
+codegen 会为每个目标生成独立函数，`bctr` 变成可解析的间接调用；
+handler 之间的 `b`/`bne` 也变成 `{ FUNC(ctx, base); return; }` 尾调用。
+
+顺带把 codegen 报的三个 `Unresolved branch`（0x820D7974 / 0x820D8000）
+也补成函数入口，直到 `grep "Unresolved branch" generated/` 为空。
+
+### 13.4 `tools/apply_patches.py`：codegen 会抹掉手工补丁
+
+`generated/**` 是 codegen 产物（且不入库，见 .gitignore）。13.1/13.2 的
+两处改动和调试陷阱都落在生成文件里，**每次 codegen 之后必须重打**：
+
+```
+rexglue codegen DoubleDragon_manifest.toml --ignore-stamp
+python tools/apply_patches.py
+cmake --build build --config Release
+```
+
+脚本幂等，负责：
+1. `DoubleDragon_pch.h`：注入 `DoubleDragon_TrapDataCall` 并改造
+   `REX_CALL_INDIRECT_FUNC`（未注册目标先 dump 现场再 Resolve，只记 8 次不退出）；
+2. `sub_82186528`：坏流/死循环 → `return 0`；
+3. `sub_821497F8`：非 JPEG → `E_FAIL`。
+
+### 13.5 当前状态（build77，无头沙箱实测）
+
+| | 修复前（build68） | 现在（build77） |
+|---|---|---|
+| 上屏 | 136 帧后永久黑屏 | **持续上屏（50s / 18000+ 帧无中断）** |
+| 图像解码 | JPEG 路径死循环 | 13 张图 `fmt-OK`（PNG 走 fmt3） |
+| 运行 | 7.5s 后冻结 | 50s 稳定、无 FATAL、无 trap |
+| GPU | — | 8 条 pipeline 正常创建 |
+
+仍未做的：
+- 用户端确认画面内容（法务屏 → 标题屏是否正常出图）；
+- `en-en` 缺 `LargeDDLogo.png` / `razorworks_logo.png` 已用根目录同名文件补齐
+  （20 次重试消失），是否该由数据侧统一补全所有 `en-en` 资源待定；
+- `sub_82186528` 的 `return 0` 属于"坏流直接放弃"，若某张图确实需要从
+  坏流里恢复会缺图，需要时再看 `CLAMP_CHUNK` 日志。

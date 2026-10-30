@@ -368,6 +368,23 @@ void DoubleDragon_DecodeHeartbeat(PPCRegister& r3) {
 
   auto* mem = ts->memory();
   if (!mem || r3.u32 < 0x1000) return;
+
+  // 追查 jpeg_error_mgr.error_exit 什么时候变成 0x40D016D0：
+  // cinfo.err 是解码器对象的第一个字段，err+0 就是 error_exit 函数指针。
+  {
+    bool oe = false;
+    uint32_t errp = ReadGuestU32(mem, r3.u32 + 0, &oe);
+    if (oe && errp >= 0x1000) {
+      bool of = false;
+      uint32_t ee = ReadGuestU32(mem, errp + 0, &of);
+      static uint32_t s_last = 0;
+      if (of && ee != s_last) {
+        s_last = ee;
+        HbLog("ERRFN", errp, ee);
+      }
+    }
+  }
+
   bool ok = false;
   uint32_t stream = ReadGuestU32(mem, r3.u32 + 24, &ok);
   if (!ok) return;
@@ -388,6 +405,43 @@ void DoubleDragon_DecodeHeartbeat(PPCRegister& r3) {
   uint32_t size = ReadGuestU32(mem, stream + 4, &oks);
   if (!oks || size == 0) return;  // 0 = 待 refill，交给回调
 
+  // 【主因】size 是"剩余字节数"，实测会变成 0xFFF5F603 这种负数（= end < cur，
+  // 说明底层数据根本不存在/已读到底）。以前我们把它"截断到可读范围"继续扫，
+  // 结果解析器永远找不到结束标记：run73 现场是黑屏后每秒几千次 marker 循环，
+  // 整个帧循环从此再不回来。正确处理是让解析干净失败：
+  // sub_82186528 返回 0 → 调用者 sub_82186798 直接 return 0 → 格式嗅探器
+  // 继续试下一种格式（PNG/fmt3 之前实测是成功的）。
+  if (size >= 0x80000000u) {
+    g_abort_decode.store(true);
+    static std::atomic<long> bs{0};
+    if (bs.fetch_add(1) < 10) HbLog("ABORT_BOGUSSZ", base, size);
+    return;
+  }
+
+  // base 本身不可读 → 同样没有可扫的字节，直接结束解析（否则扫描器会越界）。
+  if (!ProbeReadable(mem, base)) {
+    g_abort_decode.store(true);
+    static std::atomic<long> bb{0};
+    if (bb.fetch_add(1) < 10) HbLog("ABORT_BADBASE", base, size);
+    return;
+  }
+
+  // 兜底死循环检测：正常一次 JPEG 解析每个 marker 都会推进 base，
+  // 若连续十几次万次扫描停在同一个 base 上，说明早已不是在解图，直接放弃。
+  static uint32_t s_last_base = 0;
+  static long s_streak = 0;
+  if (base == s_last_base) {
+    if (++s_streak > 200000) {
+      s_streak = 0;
+      g_abort_decode.store(true);
+      HbLog("ABORT_STREAK", base, size);
+      return;
+    }
+  } else {
+    s_last_base = base;
+    s_streak = 1;
+  }
+
   // 快路径：小的、首段可读的 size 直接放过（绝大多数情况）。
   if (size <= 0x10000 && GuestRangeReadable(mem, base, size)) return;
 
@@ -403,6 +457,34 @@ void DoubleDragon_DecodeHeartbeat(PPCRegister& r3) {
       HbLog(tag, base, size);
     }
   }
+}
+
+// JPEG 解码器入口 (0x821497F8) 前置判断：输入不是 JPEG 就立刻返回 E_FAIL。
+//
+// 为什么需要：格式嗅探器 sub_8214B318 会按 [0,5,4,1,3,...] 依次把同一块数据喂给
+// 9 个解码器，fmt1 = JPEG。非 JPEG 数据（PNG/XUS）进 JPEG 解码器后，标记扫描器
+// 会在垃圾流里打转；更糟的是最终走到 libjpeg 的 error_exit（0x821478F0）——那个
+// 函数末尾是 C++ throw（0x82395270），recomp 未模拟 SEH 展开，只能被 FixThrow
+// 短路成 no-op，解码器带着毁掉的寄存器继续跑，把 jpeg_error_mgr.error_exit 写成
+// 数据指针 0x40D016D0，几百毫秒后 FATAL（run75/76/77 现场一致）。
+// 真机上这里 FF D8 校验失败只会抛异常 → 外层 catch → 试下一种格式。
+// 所以最贴近真机的做法：不是 JPEG 就别进去。返回 0x80004005 = E_FAIL（嗅探器
+// 判 <0 即失败，继续试 fmt3=PNG）。
+bool DoubleDragon_SkipJpeg(PPCRegister& r4, PPCRegister& r5) {
+  auto* ts = rex::runtime::ThreadState::Get();
+  if (!ts) return false;
+  auto* mem = ts->memory();
+  if (!mem) return false;
+  uint32_t buf = r4.u32;
+  uint32_t size = r5.u32;
+  if (size < 4 || !ProbeReadable(mem, buf)) return false;  // 交给解码器自己报错
+  bool ok = false;
+  uint32_t hdr = ReadGuestU32(mem, buf, &ok);
+  if (!ok) return false;
+  if ((hdr >> 16) == 0xFFD8) return false;  // 真 JPEG（FFD8 SOI），正常解码
+  static std::atomic<long> n{0};
+  if (n.fetch_add(1) < 20) HbLog("SKIP_JPEG", buf, hdr);
+  return true;
 }
 
 // ============ 修复探针：JPEG 扫描器空缓冲优雅退出 ============
