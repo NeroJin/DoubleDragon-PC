@@ -803,3 +803,87 @@ cmake --build build --config Release
 ### 15.6 状态
 
 build82：标题屏 45s 稳定，57.8fps，无 FATAL / 无 trap。按 A 之后的路径待用户实测。
+
+---
+
+## 16. 界面语言（2026-10-31，build82 之后只改素材）
+
+用户现场：**"可以游玩了，但显示的欧洲某国语言"**。
+
+### 16.1 语言是运行时选的，不是写死的
+
+游戏导入 `XGetLanguage`（xboxkrnl），返回值决定 `game\ui\<lang>\...` 这层目录名。
+rex 的 `XGetLanguage` 由 cvar `user_language` 驱动（`XLanguage`：1 English、2 Japanese、
+3 German、4 French、5 Spanish、6 Italian、7 Korean、8 TChinese、9 Portuguese、10 SChinese）。
+
+实测（`heartbeat`/日志里的 NtCreateFile 路径即可看到）：
+
+```
+DoubleDragon.exe                    -> ui\screens\en-en\...
+DoubleDragon.exe --user_language=8  -> ui\screens\zh-cht\StringTable.xus / zh-cht\...
+```
+
+路径字符串在 XEX 里：`file://game:/ui/screens/`、`file://game:/ui/` + `StringTable.xus`。
+
+### 16.2 真正的 bug：`en-en` 的串表是德语副本
+
+`game/ui/screens/<lang>/` 下的 `.xus` 与 png **各语言完全相同**（md5 一致，文本都来自串表），
+真正区分语言的是 `game/ui/<lang>/StringTable.xus`。而本机素材里：
+
+```
+game/ui/en-en/StringTable.xus  ==  game/ui/de-de/StringTable.xus   (md5 85157587…)
+```
+
+解出来是 "ZURÜCK / ABBRECHEN / Allgemein…"，所以默认英文界面显示德语。
+英文原表恰好在 `game/ui/StringTable.xus`（"BACK / CANCEL / Overall…"），覆盖过去即可。
+
+验证方式（很省事）：把某个语言的 `StringTable.xus` 临时改名，跑一次，日志里出现
+`[NtCreateFile] FAILED: path='game:/ui/zh-cht/StringTable.xus'` 就证明它读的是这一份。
+
+### 16.3 落地
+
+- `game/ui/en-en/StringTable.xus` ← `game/ui/StringTable.xus`（英文）。
+- 部分语言目录缺 5 张通用图（`legal_bg/legal_empire/legal_text/LargeDDLogo/razorworks_logo`），
+  补齐后各语言 screens 目录都是 45 个文件（原来 en-en 45 / de-de 43 / fr-fr 40 …）。
+- 新增 `tools/fix_lang_assets.py`（幂等）：重新解包素材后跑一次即可，
+  只修 en-en 串表 + 补齐各语言通用图，其它语言的串表原样保留。
+- 新增 `play_en.bat` / `play_zh.bat` 两个启动器（中文 = `--user_language=8`）。
+
+注意素材不入库（`.gitignore` 忽略 `game/`），所以这些修复只在本机生效，
+换机器/重新解包后要再跑 `python tools/fix_lang_assets.py`。
+
+本作只提供繁体中文（`zh-cht`），没有 `zh-cn`；`ui/arial.ttf` 是 6.6MB 的 CJK 覆盖字体
+（cmap 含 U+4E00–U+9FA5 与 Hangul），中文不需要额外字体。
+
+### 16.4 实测
+
+| | 英文（默认） | 中文（--user_language=8） |
+|---|---|---|
+| 串表加载 | `ui/en-en/StringTable.xus` 成功 | `ui/zh-cht/StringTable.xus` 成功 |
+| 界面图片 | 全部走 `en-en` | 全部走 `zh-cht` |
+| FATAL | 0 | 0 |
+
+剩余 `[NtCreateFile] FAILED` 都是"先探 `<lang>` 目录、再回退到 skins 根目录"的正常探测
+（`btn_Focus.wav`、`ButtonNorm.png`、`advert_*.png` 等，英文模式同样有 9 条）。
+
+---
+
+## 17. 游玩时 BGM 有"电流声"：是原作的锅，不是移植问题
+
+用户现场：**"音乐还有点奇怪，只有游玩的时候才会有，标题画面正常。xenia_canary 也是这样。"**
+
+结论：**正常现象**。三条证据：
+
+1. 本作内置了街机原版音频硬件模拟：`game/RomData/ddragon.snd0/.snd1`（Z80 声音程序，
+   各 ~48KB）、`ddragon.mcu`、`cpu0/cpu1`（HD6309）等原版 ROM。游玩时的 BGM/音效是
+   **实时跑 1987 年街机的 YM2151(FM) + 2× OKI MSM5205(4bit ADPCM)** 生成的。
+2. 标题画面用的是 `game/ui/uimusic.xma`（XBLA 版重新编曲的曲子，干净的流媒体音频），
+   所以"标题正常、游玩有电流感"完全对得上。
+3. 原版音源本身就是这个听感。Kotaku 的 Morning Music 专栏写 DD1 街机版：
+   *"We move on to the also-beloved first-level theme… There's an immediate buzz! It sounds
+   like a damn mosquito… How much of that comes down to the Yamaha YM2151 audio hardware
+   and how much is just Yamane's choices is unclear"*；同期评测也写 "Sound: accurate to the
+   original arcade game"（GameSpot 用户评测）、"the standard graphics and audio are all intact"。
+
+xenia_canary 表现一致，进一步说明是游戏自带的模拟器输出，而不是我们的 XMA/SDL 路径问题。
+想听"好版本"只能听 1988 年的编曲专辑（Original Sound of Double Dragon），游戏内没有。
