@@ -155,6 +155,69 @@ def patch_func(addr: str, extern_line: str, body: str, marker: str) -> bool:
     return hits > 0
 
 
+def patch_orphan_gotos() -> int:
+    """把指向"独立函数"的跨函数 goto 改成尾调用。
+
+    codegen 偶尔会在函数 A 里生成 `goto loc_X`，而 X 因为被（我们 sweep 出来的）
+    入口拆成了独立函数，A 内部就没有 loc_X 这个标签 -> 编译报
+    "use of undeclared label"。
+
+    语义上这就是一次尾跳转：被跳转的块以 blr 结束，等价于调用后立即 return。
+    """
+    # 所有已生成的函数名（sub_XXXX / FUN_XXXX）
+    defined = {}
+    for p in GEN.glob("DoubleDragon_recomp*.cpp"):
+        s = p.read_text(encoding="utf-8", errors="surrogateescape")
+        for name in re.findall(r"^DEFINE_REX_FUNC\((\w+)\) \{", s, re.M):
+            m = re.match(r"(?:sub|FUN)_([0-9A-Fa-f]{8})$", name)
+            if m:
+                defined[int(m.group(1), 16)] = name
+
+    label_def = re.compile(r"^(loc_[0-9A-Fa-f]{8}):", re.M)
+    goto_re = re.compile(r"goto (loc_([0-9A-Fa-f]{8}));")
+    fixed = 0
+    for p in sorted(GEN.glob("DoubleDragon_recomp*.cpp")):
+        s = p.read_text(encoding="utf-8", errors="surrogateescape")
+        starts = [m.start() for m in re.finditer(r"^DEFINE_REX_FUNC\((\w+)\) \{", s, re.M)]
+        if not starts:
+            continue
+        bounds = list(zip(starts, starts[1:] + [len(s)]))
+        new_s = s
+        changed = 0
+        used_names: list[str] = []
+        # 从后往前替换，避免偏移失效
+        for start, end in reversed(bounds):
+            body = s[start:end]
+            missing = set(goto_re.findall(body)) - set(label_def.findall(body))
+            for label, hexaddr in missing:
+                fname = defined.get(int(hexaddr, 16))
+                if not fname:
+                    continue  # 找不到对应函数，交给编译报错暴露
+                body = body.replace(
+                    f"goto {label};",
+                    "{ %s(ctx, base); return; } /* 跨函数尾跳转 */" % fname,
+                )
+                changed += 1
+                if fname not in used_names:
+                    used_names.append(fname)
+            if changed:
+                new_s = new_s[:start] + body + new_s[end:]
+        if changed:
+            # 这些函数定义在别的 .cpp 里，而本文件只 include 了按需裁剪的
+            # funcs.N.h，所以要自己补声明，否则编译报 undeclared identifier。
+            decls = "".join(f"DECLARE_REX_FUNC({n});\n" for n in used_names
+                            if f"DECLARE_REX_FUNC({n});" not in new_s)
+            if decls:
+                first_nl = new_s.index("\n")
+                new_s = new_s[:first_nl + 1] + "\n" + decls + new_s[first_nl + 1:]
+            p.write_text(new_s, encoding="utf-8", errors="surrogateescape")
+            print(f"  {p.name}: 跨函数 goto -> 尾调用 {changed} 处")
+            fixed += changed
+    if fixed == 0:
+        print("  orphan goto: 无需修补")
+    return fixed
+
+
 def main() -> None:
     if not GEN.exists():
         sys.exit(f"missing {GEN}")
@@ -162,6 +225,7 @@ def main() -> None:
     patch_pch()
     patch_func("82186528", ABORT_EXTERN, ABORT_BODY, "DD_TakeDecodeAbort()")
     patch_func("821497F8", SKIP_EXTERN, SKIP_BODY, "DoubleDragon_SkipJpeg(ctx.r4")
+    patch_orphan_gotos()
     print("done")
 
 

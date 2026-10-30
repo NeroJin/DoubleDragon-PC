@@ -442,10 +442,117 @@ includes = []
 0x820E0B98 = { name = "FUN_820E0B98" }
 0x820E0BB0 = { name = "FUN_820E0BB0" }
 0x820E0BCC = { name = "FUN_820E0BCC" }
-# 分支目标补全（迭代生成）
+
+
+# VM dispatcher 内部的未解析条件分支目标（codegen 报 Unresolved branch）
 0x820D7974 = { name = "FUN_820D7974" }
 0x820D8000 = { name = "FUN_820D8000" }
-# ==========================================================
+
+
+
+
+# 缺口补全（tools/iterate_codegen.py 自动生成）
+
+# >>> 验证通过的 thunk 入口（tools/prune_entries.py 生成）
+
+0x82080D94 = { name = "FUN_82080D94" }
+0x82086904 = { name = "FUN_82086904" }
+0x82087AB8 = { name = "FUN_82087AB8" }
+0x82089FC8 = { name = "FUN_82089FC8" }
+0x8209798C = { name = "FUN_8209798C" }
+0x82098284 = { name = "FUN_82098284" }
+0x8209A708 = { name = "FUN_8209A708" }
+0x820D274C = { name = "FUN_820D274C" }
+0x820D2CDC = { name = "FUN_820D2CDC" }
+0x820D2D64 = { name = "FUN_820D2D64" }
+0x820D3688 = { name = "FUN_820D3688" }
+0x820D37A8 = { name = "FUN_820D37A8" }
+0x820D3810 = { name = "FUN_820D3810" }
+0x820D38C0 = { name = "FUN_820D38C0" }
+0x820D5CFC = { name = "FUN_820D5CFC" }
+0x820D5E00 = { name = "FUN_820D5E00" }
+0x820D5F0C = { name = "FUN_820D5F0C" }
+0x820D5F90 = { name = "FUN_820D5F90" }
+0x820D608C = { name = "FUN_820D608C" }
+0x820D61C0 = { name = "FUN_820D61C0" }
+0x820D65B8 = { name = "FUN_820D65B8" }
+0x820D6764 = { name = "FUN_820D6764" }
+0x820D68E4 = { name = "FUN_820D68E4" }
+0x820D6F30 = { name = "FUN_820D6F30" }
+0x820D70B4 = { name = "FUN_820D70B4" }
+0x820D723C = { name = "FUN_820D723C" }
+0x820D73C8 = { name = "FUN_820D73C8" }
+0x820D75D0 = { name = "FUN_820D75D0" }
+0x820D76C8 = { name = "FUN_820D76C8" }
+0x820E47B0 = { name = "FUN_820E47B0" }
+0x820E4AE0 = { name = "FUN_820E4AE0" }
+0x820EA450 = { name = "FUN_820EA450" }
+0x820EE4DC = { name = "FUN_820EE4DC" }
+0x820EE688 = { name = "FUN_820EE688" }
+0x820F71C4 = { name = "FUN_820F71C4" }
+0x820FFE68 = { name = "FUN_820FFE68" }
+0x821030BC = { name = "FUN_821030BC" }
+0x82103234 = { name = "FUN_82103234" }
+0x82108A3C = { name = "FUN_82108A3C" }
+0x82108BCC = { name = "FUN_82108BCC" }
+0x82120004 = { name = "FUN_82120004" }
+0x82121F4C = { name = "FUN_82121F4C" }
+0x82137B14 = { name = "FUN_82137B14" }
+0x82166F0C = { name = "FUN_82166F0C" }
+0x8216B454 = { name = "FUN_8216B454" }
+0x8216CEA4 = { name = "FUN_8216CEA4" }
+0x8216DD38 = { name = "FUN_8216DD38" }
+0x82171100 = { name = "FUN_82171100" }
+0x8219AB30 = { name = "FUN_8219AB30" }
+0x8219AC20 = { name = "FUN_8219AC20" }
+0x8219D308 = { name = "FUN_8219D308" }
+0x8219D318 = { name = "FUN_8219D318" }
+0x8219D328 = { name = "FUN_8219D328" }
+0x8219D338 = { name = "FUN_8219D338" }
+0x8219D348 = { name = "FUN_8219D348" }
+0x8219D358 = { name = "FUN_8219D358" }
+0x8219D368 = { name = "FUN_8219D368" }
+0x8219D378 = { name = "FUN_8219D378" }
+0x8219D388 = { name = "FUN_8219D388" }
+0x8219D398 = { name = "FUN_8219D398" }
+0x821A334C = { name = "FUN_821A334C" }
+0x821B4C94 = { name = "FUN_821B4C94" }
+0x821DC0E4 = { name = "FUN_821DC0E4" }
+0x821DD1F8 = { name = "FUN_821DD1F8" }
+0x821DE010 = { name = "FUN_821DE010" }
+0x821DE6C8 = { name = "FUN_821DE6C8" }
+0x821E5934 = { name = "FUN_821E5934" }
+0x821E6824 = { name = "FUN_821E6824" }
+0x822093B8 = { name = "FUN_822093B8" }
+0x82213D74 = { name = "FUN_82213D74" }
+0x8222B57C = { name = "FUN_8222B57C" }
+0x8222D878 = { name = "FUN_8222D878" }
+0x822381DC = { name = "FUN_822381DC" }
+0x822B35A4 = { name = "FUN_822B35A4" }
+0x822B93E0 = { name = "FUN_822B93E0" }
+0x822B96D4 = { name = "FUN_822B96D4" }
+0x822C36C4 = { name = "FUN_822C36C4" }
+0x822CCD50 = { name = "FUN_822CCD50" }
+0x822D31C4 = { name = "FUN_822D31C4" }
+0x822EFBE4 = { name = "FUN_822EFBE4" }
+0x82303B38 = { name = "FUN_82303B38" }
+0x82303BA4 = { name = "FUN_82303BA4" }
+0x82303C0C = { name = "FUN_82303C0C" }
+0x82303C6C = { name = "FUN_82303C6C" }
+0x82303E08 = { name = "FUN_82303E08" }
+0x823223A8 = { name = "FUN_823223A8" }
+0x82322410 = { name = "FUN_82322410" }
+0x823244B8 = { name = "FUN_823244B8" }
+0x82324AD0 = { name = "FUN_82324AD0" }
+0x82324CCC = { name = "FUN_82324CCC" }
+0x823371E8 = { name = "FUN_823371E8" }
+0x8233730C = { name = "FUN_8233730C" }
+0x823374F0 = { name = "FUN_823374F0" }
+0x8237FBD0 = { name = "FUN_8237FBD0" }
+0x82394B04 = { name = "FUN_82394B04" }
+0x823A9AEC = { name = "FUN_823A9AEC" }
+
+# <<< 验证通过的 thunk 入口
 # 调试探针（临时）：定位 866B0 不返回/崩溃根因。见 src/hooks.cpp。用完移除。
 # ==========================================================
 [[entrypoint.midasm_hook]]

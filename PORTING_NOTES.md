@@ -711,3 +711,95 @@ void OnPreLaunchModule() override {
 不是崩溃——同一次调用内连续跑 60s 一切正常。
 
 启动时 `rex_runtime.log` 会打印一行 `present config: vsync=true ...` 方便核对。
+
+---
+
+## 15. 按 A 闪退：运行时拼出来的回调地址（2026-10-30 深夜，build82）
+
+现场：标题屏提示按 A，按下瞬间退出。
+
+```
+[NtCreateFile] FAILED: game:/ui/skins/Graphics/en-en/btn_Select.wav
+XamShowDeviceSelectorUI(...)
+[FATAL] Call to invalid or unregistered function at guest address 0x820EE688
+```
+
+`trap_dump.txt` 给出 `lr=0x820E4434`，调用点是
+
+```asm
+0x820E4420  lwz  r4,8(r31)      ; arg2
+0x820E4424  lwz  r3,4(r31)      ; arg1
+0x820E4428  lwz  r11,0(r31)     ; fp  <- 0x820EE688
+0x820E442C  mtctr r11
+0x820E4430  bctrl
+```
+
+### 15.1 这个地址为什么 codegen 看不到
+
+`0x820EE688` 是 12 字节的跳板（jmp thunk）：
+
+```asm
+0x820EE688  lis  r11,0x8241
+0x820EE68C  addi r3,r11,-0x288   ; r3 = &global_0x8240FD78
+0x820EE690  b    0x820F6A20
+```
+
+它**不在 `.pdata`**（没有 unwind 信息），也**没有任何静态 call/branch 指向**：
+调用方是在 0x820EE6D8 处现拼出来的
+
+```asm
+0x820EE6D8  lis  r11,0x820F
+0x820EE6F0  addi r4,r11,-0x1978  ; r4 = 0x820EE688
+0x820EE6F4  bl   0x820E41E0      ; 存进回调结构
+```
+
+这是 MSVC 生成的「成员函数指针/全局单例适配器」，游戏里到处都是。
+
+### 15.2 试过的两条错路（别再走）
+
+1. **把所有"前面是终结指令"的地址当函数入口**（tools/gen_entry_sweep.py）
+   —— 捞出 8222 个，其中大量是函数体中间的位置。声明后 codegen 会把原函数
+   从中间切断，产生上千条 `Unresolved branch`，运行时直接
+   `[FATAL] Unresolved branch from 0x820F0AC0 to 0x820F0A9C`。**已放弃**。
+2. **按 codegen 报的未解析分支反推并剔除**（tools/iterate_codegen.py）
+   —— 能收敛一部分，但分支两端之间不一定有我们的声明，最终还是剩几百条。
+   **只保留它做"补缺口"用**（`target not in any function` 那一类）。
+
+### 15.3 现在的做法：逐个验证
+
+`tools/prune_entries.py`：
+
+1. 线性扫描 `.text`，跟踪 `lis` 的页基址，遇到 `addi/ori` 就拼出地址，
+   落在代码区且 4 字节对齐、能解码的 → 候选（`tools/gen_callback_entries.py`）。
+2. 只留"短 thunk"：从候选地址起 ≤16 条指令内遇到 `b/blr/bctr` 的。
+3. **一个一个**写进 manifest 跑 codegen：干净（exit 0、无 Unresolved）就保留，
+   否则撤回。因为加一个入口会改变函数划分，必须累积验证。
+
+结果：165 个候选里保留 96 个，包含 `0x820EE688`；codegen 干净，
+注册函数 10880 → 10976。
+
+### 15.4 顺带修掉的两类生成代码问题（都在 tools/apply_patches.py）
+
+- **跨函数 goto**：`goto loc_X` 而 X 已被拆成独立函数 → 编译报
+  `use of undeclared label`。改成尾调用 `{ FUN_X(ctx, base); return; }`
+  （X 的块以 blr 结束，语义等价），并在文件头补 `DECLARE_REX_FUNC(FUN_X);`
+  （每个 recomp.N.cpp 只 include 按需裁剪的 funcs.N.h）。
+- **pch 陷阱 / 86528 abort / 497F8 skip**：老样子，codegen 后必须重打。
+
+### 15.5 标准流程（每次改 manifest 或 codegen 后）
+
+```
+rexglue codegen DoubleDragon_manifest.toml --ignore-stamp
+python tools/iterate_codegen.py      # 有缺口/未解析分支时用来收敛
+python tools/apply_patches.py        # 三处补丁 + 跨函数 goto
+cmake --build build --config Release
+```
+
+再遇到 `[FATAL] ... unregistered function at 0xXXXXXXXX`：
+把该地址补进 manifest 的 `[entrypoint.functions]`，
+跑 `tools/prune_entries.py`（会重新验证一遍全体候选）或直接 codegen 验证是否干净，
+然后按上面的流程重建。`trap_dump.txt` 里的 `lr` 就是调用点，反汇编能看出目标怎么来的。
+
+### 15.6 状态
+
+build82：标题屏 45s 稳定，57.8fps，无 FATAL / 无 trap。按 A 之后的路径待用户实测。
