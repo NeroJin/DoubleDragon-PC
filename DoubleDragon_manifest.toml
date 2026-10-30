@@ -27,3 +27,72 @@ includes = []
 
 # 运行时间接调用目标（自动扫描补入 14:55:18）
 0x82187348 = { name = "FUN_82187348" }
+
+# ==========================================================
+# 调试探针（临时）：定位 866B0 不返回/崩溃根因。见 src/hooks.cpp。用完移除。
+# ==========================================================
+[[entrypoint.midasm_hook]]
+address = 0x821866FC
+name = "DoubleDragon_ProbeScanLoop"
+registers = ["r10", "r11", "r31"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82147970
+name = "DoubleDragon_ProbeRefillRet"
+registers = ["r3", "r11"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x821846B8
+name = "DoubleDragon_ProbeEnter821846B8"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82207C30
+name = "DoubleDragon_ProbeEnter82207C30"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82186798
+name = "DoubleDragon_ProbeEnter8298"
+registers = ["r1", "r3", "r31"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x821866B0
+name = "DoubleDragon_ProbeEnter866B0"
+registers = ["r3", "r31"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x821866E0
+name = "DoubleDragon_Probe866E0"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82186720
+name = "DoubleDragon_Probe86720"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8218677C
+name = "DoubleDragon_Probe8677C"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82390bc0
+name = "DoubleDragon_ProbeRest"
+registers = ["r1"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x821867E4
+name = "DoubleDragon_ProbeE4"
+registers = ["r3", "r31"]
+return = false
