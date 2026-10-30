@@ -671,3 +671,43 @@ cmake --build build --config Release
   （20 次重试消失），是否该由数据侧统一补全所有 `en-en` 资源待定；
 - `sub_82186528` 的 `return 0` 属于"坏流直接放弃"，若某张图确实需要从
   坏流里恢复会缺图，需要时再看 `CLAMP_CHUNK` 日志。
+
+---
+
+## 14. 恢复垂直同步（2026-10-30 深夜，build78）
+
+用户现场：**"可以运行了，不过要开垂直同步，要不然速度会变快。"**
+
+原因很直接：黑屏排查期在 `OnPreLaunchModule` 里写的 `vsync=false` 一直没撤。
+recomp 的 guest 侧 vblank 节拍由 presenter 的 vsync worker 驱动，
+`vsync=false` 之后 Present 立即返回、vblank 中断按 CPU 速度狂发，
+游戏逻辑自然跑得比实时快（实测无头环境 50s / 18000+ 帧 ≈ 360fps）。
+
+修改（`src/DoubleDragon_app.h`）：
+
+```cpp
+void OnPreLaunchModule() override {
+  // 用户从命令行显式改过就不覆盖（例如 --vsync=false 做性能测试）
+  if (!rex::cvar::HasNonDefaultValue("vsync")) {
+    rex::cvar::SetFlagByName("vsync", "true");
+  }
+  rex::cvar::SetFlagByName("host_present_from_non_ui_thread", "true");
+  REXLOG_INFO("present config: vsync={} host_present_from_non_ui_thread={}", ...);
+}
+```
+
+`host_present_from_non_ui_thread=true` 保留：guest 主循环直接在 guest 线程
+调 VdSwap，默认走 UI 线程派发会死锁。
+
+实测（无头沙箱，60s 连续）：
+
+| | vsync=false | vsync=true |
+|---|---|---|
+| 帧率 | ~360fps（快进） | **58.4fps（60Hz 节拍）** |
+| 60s 帧数 | 18000+ | 3510 |
+| 稳定性 | 正常 | 60s 无 FATAL / 无 trap，进程存活 |
+
+另：之前"运行几十秒后进程消失"是沙箱在上一个 bash 调用结束时杀掉残留进程，
+不是崩溃——同一次调用内连续跑 60s 一切正常。
+
+启动时 `rex_runtime.log` 会打印一行 `present config: vsync=true ...` 方便核对。

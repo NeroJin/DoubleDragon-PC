@@ -64,15 +64,23 @@ class DoubledragonApp : public rex::ReXApp {
     InstallGuestCrashDump();
   }
 
-  // guest 启动前关闭 vsync：recomp 的 D3D12 presenter 默认 Present(1) 等待 vsync，
-  // 在无头/合成异常等环境下 vsync 永不到来 -> 第 2 次上屏永久阻塞（黑屏）。
-  // 关掉后 Present(0) 立即返回，避免上屏死锁。
+  // 保持垂直同步开启。
+  // recomp 的 vblank（guest 侧 VdSwap 的节拍）由 presenter 的 vsync worker 驱动：
+  // 关掉 vsync 后 Present 立即返回，vblank 中断就按 CPU 速度狂发，游戏逻辑跑得
+  // 比实时快（实测"速度变快"）。黑屏排查期临时关 vsync 只是为了绕开当时的上屏
+  // 阻塞，真正根因是 gpu_plugin 为空，已修；这里恢复默认的实时节拍。
+  // 若用户从命令行显式改过（--vsync=false 等），尊重用户选择不覆盖。
   // host_present_from_non_ui_thread：游戏主循环跑在 guest 线程并直接调 VdSwap，
-  // 默认 presenter 会把上屏派发到 UI 线程等待 -> UI 线程没在泵消息时死锁。
-  // 允许 guest 线程直接上屏，绕开跨线程派发死锁。
+  // 默认 presenter 会把上屏派发到 UI 线程并等待 -> UI 线程没在泵消息时死锁，
+  // 所以允许 guest 线程直接上屏。
   void OnPreLaunchModule() override {
-    rex::cvar::SetFlagByName("vsync", "false");
+    if (!rex::cvar::HasNonDefaultValue("vsync")) {
+      rex::cvar::SetFlagByName("vsync", "true");
+    }
     rex::cvar::SetFlagByName("host_present_from_non_ui_thread", "true");
+    REXLOG_INFO("present config: vsync={} host_present_from_non_ui_thread={}",
+                rex::cvar::GetFlagByName("vsync"),
+                rex::cvar::GetFlagByName("host_present_from_non_ui_thread"));
   }
 
   // 把运行时日志落盘，抓 GPU/present/输入等真实报错（GUI 下 stderr 看不到）。
