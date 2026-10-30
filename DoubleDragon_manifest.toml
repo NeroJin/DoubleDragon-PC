@@ -9,3 +9,21 @@ game_root = "game"
 file_path = "game/default.xex"
 out_directory_path = "generated/default"
 includes = []
+
+# 手动函数标注（必须位于 [entrypoint] 内部才生效）
+[entrypoint.functions]
+
+# 静态分析报出的未解析直接跳转：
+#   b 0x82379438 from 0x8237980C - target not in any function
+# 目标地址落在已发现区间之外的孤岛，标注后由种子级联补全。
+0x82379438 = { name = "FUN_82379438" }
+
+# 运行时间接调用目标（静态分析不可见），不标注会 FATAL:
+#   "Call to invalid or unregistered function at guest address 0x823705F8"
+0x823705F8 = { name = "FUN_823705F8" }
+
+# 运行时间接调用目标（自动扫描补入 14:55:01）
+0x8236BBA8 = { name = "FUN_8236BBA8" }
+
+# 运行时间接调用目标（自动扫描补入 14:55:18）
+0x82187348 = { name = "FUN_82187348" }

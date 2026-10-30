@@ -6,6 +6,9 @@
 
 #include <rex/rex_app.h>
 
+// crashdump.cpp：guest 崩溃时打印 PPC 调用栈（开发期辅助）
+void InstallGuestCrashDump();
+
 class DoubledragonApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -14,6 +17,12 @@ class DoubledragonApp : public rex::ReXApp {
       rex::ui::WindowedAppContext& ctx) {
     return std::unique_ptr<DoubledragonApp>(new DoubledragonApp(ctx, "DoubleDragon",
         PPCImageConfig));
+  }
+
+  // 主 guest 线程已创建、尚未开始执行：在这里装崩溃转储，能盖掉运行时自己的过滤器。
+  void OnPostLaunchModule(rex::system::XThread* thread) override {
+    (void)thread;
+    InstallGuestCrashDump();
   }
 
   // Override virtual hooks for customization:
