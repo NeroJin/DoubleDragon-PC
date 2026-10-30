@@ -434,6 +434,61 @@ void DoubleDragon_TraceFmtOk(PPCRegister& r30) {
   std::fprintf(stderr, "[fmt-OK] ret=0x%08X this=0x%08X\n", r30.u32, ctx->r31.u32);
 }
 
+// 0x8214A980：格式 3 成功路径上 r31 仍指向解码对象（之后 mr r31,r19 把它改成 0）。
+// 在此 dump 对象前 64 字，标出落在数据堆 0x40xxxxxx 的字段（被污染成缓冲地址的
+// 虚表/函数指针嫌疑）。
+void DoubleDragon_DumpFmt3Obj(PPCRegister& r31) {
+  auto* ts = rex::runtime::ThreadState::Get();
+  if (!ts) return;
+  auto* mem = ts->memory();
+  auto* ctx = ts->context();
+  static int c = 0;
+  if (c++ >= 8) return;
+  uint32_t obj = r31.u32;
+  std::fprintf(stderr, "[dump-fmt3 #%d] obj=0x%08X r1=0x%08X\n", c, obj, ctx->r1.u32);
+  for (int i = 0; i < 256; ++i) {
+    bool ok = false;
+    uint32_t v = ReadGuestU32(mem, obj + i * 4, &ok);
+    if (!ok) {
+      if (i % 16 == 0) std::fprintf(stderr, "  +%-3d: <unmapped>\n", i * 4);
+      continue;
+    }
+    const char* flag = "";
+    if (v >= 0x40000000u && v < 0x42000000u) flag = "  <== DATA-HEAP";
+    if (v == 0x40D016D0) flag = "  <== FATAL TARGET!";
+    if (v == 0x40D016D0 || (i < 8) || flag[0])
+      std::fprintf(stderr, "  +%-3d: 0x%08X%s\n", i * 4, v, flag);
+  }
+}
+
+// 实验 A：在格式 3（sub_8214A588）返回值装载点（0x8214AA90, mr r3,r31）
+// 强制返回 0x80004005（失败），让格式分发循环继续尝试 8/7/2/6（真正的 PNG 解码器
+// 可能落在这些里）。目的：验证 FATAL(0x40D016D0) 是否由格式 3 的"假成功"造成。
+void DoubleDragon_FailFmt3(PPCRegister& r3) {
+  static int c = 0;
+  if (c++ < 200) {
+    r3.u32 = 0x80004005;
+  }
+  // 一次性 dump FATAL 目标 0x40D016D0 周围，判断它到底是虚表还是 PNG 数据。
+  if (c == 1) {
+    auto* ts = rex::runtime::ThreadState::Get();
+    if (ts) {
+      auto* mem = ts->memory();
+      std::fprintf(stderr, "[bad-target] dump @0x40D016D0:\n");
+      for (int i = -8; i < 24; ++i) {
+        uint32_t g = 0x40D016D0 + i * 4;
+        bool ok = false;
+        uint32_t v = ReadGuestU32(mem, g, &ok);
+        if (ok) std::fprintf(stderr, "  0x%08X: 0x%08X%s\n", g, v,
+                             (v >= 0x82000000u && v < 0x82400000u) ? "  <== CODE"
+                             : (v >= 0x40D00000u && v < 0x41100000u) ? "  <== DATA"
+                             : "");
+        else std::fprintf(stderr, "  0x%08X: <unmapped>\n", g);
+      }
+    }
+  }
+}
+
 // sub_821497F8 入口（资源加载总入口，帧 1088）
 void DoubleDragon_Probe497F8(PPCRegister& r3) {
   auto* ts = rex::runtime::ThreadState::Get();

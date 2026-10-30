@@ -220,6 +220,18 @@ registers = ["r3", "r4", "r5"]
 return = false
 
 [[entrypoint.midasm_hook]]
+address = 0x8214A980
+name = "DoubleDragon_DumpFmt3Obj"
+registers = ["r31"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8214AA90
+name = "DoubleDragon_FailFmt3"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
 address = 0x82147CF0
 name = "DoubleDragon_TraceFmt8"
 registers = ["r3", "r4", "r5"]

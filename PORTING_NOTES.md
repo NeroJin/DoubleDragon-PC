@@ -320,3 +320,79 @@ XEX 里确实内嵌了 libpng（`dd_dec.xex` 中 0x82019db0 处 libpng 错误串
   `mr r3,r5` 字节自校验；可搜 PNG 字符串/被引用位置
 - `tools/find_png_refs.py`：扫 lis/addi 对，列出指向指定 .rdata 页的代码引用
 - 解压 XEX：`xextool.exe -e u -o dd_dec.xex game/default.xex`
+
+## 10. 0x40D016D0 根因深挖（build38–45）：虚表被污染 / 未重定位
+
+### 10.1 run46（noop 陷阱）暴露的关键事实
+
+把 `REX_CALL_INDIRECT_FUNC` 里对 `0x40D016D0` 的命中从“FATAL”改成“打印并 noop 继续”，
+run46 抓到**同一坏值被从很多不同调用点调用**，且 `r3/r31` 恒为 `0x7018E800`：
+
+```
+[TRAP-UNREG] target=0x40D016D0 lr=0x821854E0 r3=0x7018E800 ...   (sub_821852A0 fallback: 虚表槽 0)
+[TRAP-UNREG] target=0x40D016D0 lr=0x82185530 r3=0x7018E800 ...   (sub_821852A0 matched: 虚表槽 +4)
+[TRAP-UNREG] target=0x40D016D0 lr=0x82207700 r3=0x7018E800 r30=0x40DCD10 ...
+[TRAP-UNREG] target=0x40D016D0 lr=0x82207744 r3=0x7018E800 r30=0x40DCD10 ...
+[TRAP-UNREG] target=0x40D016D0 lr=0x822077B4 r3=0x7018E800 r30=0x40D0008C / 0x40D000E0 ...
+[TRAP-UNREG] target=0x40D016D0 lr=0x82209658 r3=0x7018E800 r30=0x40D01870 ...
+[TRAP-UNREG] target=0x40D016D0 lr=0x822081C4 r3=0x7018E800 r30=0x40DC200 (r31=0)
+[TRAP-UNREG] target=0x40D016D0 lr=0x82208130 r3=0x7018E800 r30=0x7018E800 (r31=0)
+```
+
+结论：
+
+- **核心对象就是 `0x7018E800`**——几乎所有现场的 `r3/r31` 都是它（仅末尾两处 `r31=0`
+  但 `r3` 仍是 `0x7018E800`，即 `r3` 是对象、`r31` 在那些调用点不是）。
+- 它是一个**被很多调用点通过虚表调用的对象**，而这些调用点取的虚表槽位值**恒为 `0x40D016D0`**
+  （fallback 取槽 0、matched 取槽 +4，外加 0x82207xxx 等取其它偏移，全都是 `0x40D016D0`）。
+- `0x40D016D0` 落在 **`0x40D00000` 这个 heap/data 区**（之前已确认是 PNG 缓冲
+  `0x40D00060 + 0x1670`，高熵随机字节，不是代码也不是虚表）。
+- `sub_821852A0` 的派发表 one-past-end（`*(obj+220)` + `*(obj+36)*84`）也等于 `0x40D016D0`；
+  其它调用点的 `r30` 是 `0x40DCD10 / 0x40D0008C / 0x40D000E0 / 0x40D01870 / 0x40DC200`
+  ——**全是 `0x40D00000` 数据区地址**。即对象 `0x7018E800` 的多个指针字段都指向这个数据区。
+
+### 10.2 根因假设（待 trap_dump.txt 确认）
+
+- **假设 A（最可能）：虚表未重定位 / 被污染。** 对象 `0x7018E800` 的虚表指针
+  `*(obj+0)` 所指向的虚表里，多个槽位被写成了 `0x40D016D0`——一个 guest 数据/堆地址。
+  要么 recomp 漏重定位了某张虚表里的函数指针（原始 XEX 里的绝对地址没被改写），
+  要么某个 hook（`[fix-entry]`/`[fix-a18]` 等）或运行时把数据指针误写进了虚表槽。
+- **假设 B：** `0x40D016D0` 本身就是一张“占位/未实现”虚表的地址，槽位全是它，
+  recomp 没为它生成代码 → 调用即 FATAL。（与 A 同类，都是“该地址没有对应 recomp 函数”。）
+
+无论哪种，修复方向都是：**让 `0x40D016D0` 这个调用目标变成合法 code 地址**——
+要么在 manifest `[entrypoint.functions]` 里为它生成 recomp 函数，要么校正重定位，
+要么撤回污染它的写入。
+
+### 10.3 诊断陷阱（已落入代码，build45 二进制已含）
+
+`generated/default/DoubleDragon_pch.h` 的 `REX_CALL_INDIRECT_FUNC`：
+
+- 条件从“`target == 0x40D016D0`”放宽为“**任何未解析且 `target < 0x82000000`（代码基址）**的
+  间接调用”——这是“数据被当代码调用”的通用特征，能罩住同类 bug。
+- `RexTrapUnregistered` 命中后 dump：
+  - 现场 `r1/r3/r4/r5/r29/r30/r31`、`r25`、`r27`；
+  - `obj=0x7018E800` 的 `vptr=*(+0)`、`count=*(+36)`、`dtbl=*(+220)`；
+  - **虚表 `slots[0..15]`**（确认哪个槽位 = 0x40D016D0、虚表指针本身是否指向数据区）；
+  - 目标地址 `0x40D016D0` 处 16 字节（确认是 PNG/数据还是代码）；
+  - `obj` 前 32 字布局；`r25` 处 16 字节命令串。
+  - 然后 `::_exit(2)` 干净退出。
+- **写入文件 `D:/Projects/DoubleDragon/trap_dump.txt`（不是 stderr）**：
+  原因——本 agent 沙箱里游戏是 WIN32 GUI 子系统、没有关联控制台，`fprintf(stderr)`
+  输出会丢（run46 能抓到只是因为那次运行有控制台）。写文件不受控制台影响。
+
+### 10.4 当前阻塞：本沙箱跑不到该路径
+
+在 agent 无头沙箱里：游戏进程能起来（`tasklist` 可见 PID、Console 会话、~20MB 内存），
+但跑到 240s 也不触发陷阱、无输出——它停在标题/菜单，或 **headless 的 xenos GPU 路径
+把触发 `0x40D016D0` 的那条 UI 屏幕加载推迟/跳过了**（run46 日志里陷阱出现在很靠后的位置，
+说明它在后期交互/attract 路径上）。所以这里无法复现。
+
+**下一步（需用户在有显示的环境跑，那里 run40–46 能复现）：**
+1. 用 build45 的 `build/Release/DoubleDragon.exe` 运行；
+2. 游戏跑到触发点会自动写出 `trap_dump.txt`；
+3. 把 `trap_dump.txt` 贴回来，据此确认虚表指针与坏槽位，决定：
+   - 是漏重定位 → 在 manifest 给 `0x40D016D0`（及同虚表相邻槽）补 `FUN_*` 生成，或
+   - 是 hook 污染 → 撤回对应写入。
+
+（陷阱代码是临时调试用，确认根因后应从 `DoubleDragon_pch.h` 移除。）
