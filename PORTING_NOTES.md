@@ -216,3 +216,107 @@ r4=0x24000448/r5=0x8214984C（与旧崩溃相同的寄存器特征）。疑似�
 （另一处 throw/截断函数），待查。另注意 `sub_82395270` 内的 `__imp__RtlUnwind`
 是 rexbuilt 导入 shim，其真实行为（空操作还是有模拟）未确认——若 rexglue 未来
 加入 guest SEH 支持，本节缓解方案应整体移除。
+
+---
+
+## 9. 第二~四层：throw 吞掉、格式分发循环、refill 校验（build30–37）
+
+### 9.1 崩溃 #2 真凶：state 201 的“再抛”
+
+build30 探针抓到完整链（run30.log）：
+
+```
+[497F8 #1] r3=0x7018F050 r4=0x40D00060 r5=0x368C9   ← 内存里的 PNG（223KB）
+[BD0 #1]  obj=0x7018EAC0  state=0xC9(201)            ← JPEG 工厂走完后状态 201
+[C28]     state=201 → BD0 默认分支 → bctrl *(obj+0)[0]
+[THROW]   lr=0x82184D2C → bctrl 目标就是 throw 助手 0x821478F0 本身
+```
+
+即：对象的 `vtable[0]` **直接就是 throw 助手**（“不支持的操作”占位）。真机上它会
+RtlUnwind 展开到上层 catch；recomp 里函数从末尾掉出去 → r1/r31 全毁 → BD0 带着
+垃圾 r31 继续 → `A18` 读 `+424`(=0) → 空指针崩溃。
+
+### 9.2 修复：throw 助手无害化（关键）
+
+```toml
+[[entrypoint.midasm_hook]]
+address = 0x821478F0          # throw 助手入口
+name = "DoubleDragon_FixThrow"
+return = true                 # 生成: Hook(r3); return;  ← 不动 r1/r31
+```
+
+`return = true` 在函数入口 = 整段函数被短路，寄存器原样返回给调用者。效果：所有
+对 0x821478F0 的 throw 都变成 no-op（“异常被吞”），调用者（BD0/A18 循环等）拿到
+完好寄存器继续。**这一条把“每次 throw 必崩”变成了可继续执行**。
+
+### 9.3 A18 的 +424 补洞（注意：不能写对象自身字段！）
+
+- `+424 == 0` 时 A18 的 `lwz r11,0(r11)` 会崩 → 需要给它一个合法接口块
+- 试验 1（build32）：指向 `+440` 真实接口块 → 其 `[8]` 恒非零 → A18 的
+  `loc_82184A70` 循环**死锁**（日志 1300 万行，PrintCap 计数器还溢出了）
+- 试验 2（build33）：在对象尾部 +420/+428 自建接口 → 能跑，但**污染共享对象**
+- 最终（build36）：`LookupHeapByType(false,0x1000)->Alloc(16,…)` 分配独立 guest
+  临时块，写入 `{0x823AC730(纯 blr 空函数), 0, 0}`，`+424 := 该块`
+- 另加 `[guard-a18]` @0x82184A70：同一对象循环 >2000 次就把 `iface[8]` 清零强制退出
+
+### 9.4 refill 结果必须做可读性校验
+
+run38：扫描器拿到 `base=0x40510000`（未映射）仍 `lbz` → 未处理 AV。修法：
+
+```cpp
+// xmemory: LookupHeap(addr) + QueryRangeAccess(low,high) != kNoAccess
+bool GuestRangeReadable(mem, addr, size);
+```
+
+- `[fix-refill]` @0x82147970：重载后 `base==0 || size==0 || !可读` → `r3=0`（EOF）
+- `[fix-86528]` @0x82186528 入口：入口块坏 → 清 size/pending（同 866B0 规则）
+- 注意：`TranslateVirtual()` 不做映射校验，直接加偏移，读未映射页就是 AV；
+  低地址（<0x1000）读还会绕过 `__try/__except` 直接崩进程（run31 实测）
+
+### 9.5 关键认知：`sub_8214B318` 是“9 种格式逐个尝试”循环
+
+```
+数组 [0,5,4,1,3,8,7,2,6]（栈上 r1+112 起 9 个字）
+loop: switch(fmt) → 各解码器(this, buf, size)；返回 <0 = 失败(清理后试下一个)，
+      >=0 = 成功(跳出)。解码器入口：
+  0→8214B298 1→821497F8(JPEG) 2→82149B78 3→8214A588 4→8214ADF8
+  5→8214A2A0 6→82148C38 7→821480F8 8→82147CF0
+```
+
+**这就是游戏用异常做格式嗅探的地方。** run40 实测每张图的真实序列：
+
+```
+fmt 0 → E_FAIL, fmt 5 → E_FAIL, fmt 4 → E_FAIL, fmt 1(JPEG) → E_FAIL(我们的缓解),
+fmt 3 → 0  ← 成功，跳出循环（8/7/2/6 从未尝试）
+```
+
+因此 PNG 最终是被 **格式 3（sub_8214A588）** 接下的，图像解码并没有真的失败。
+XEX 里确实内嵌了 libpng（`dd_dec.xex` 中 0x82019db0 处 libpng 错误串
+“Application transferred too many scanlines”，0x82040d48 处 chunk 名表
+`IHDR/IDAT/IEND/PLTE`，另有内嵌 PNG 资源）。
+
+### 9.6 当前剩余问题（build37 / run40）
+
+跑满 10s、无 guest 崩溃、10 张图全部“成功”，最后：
+
+```
+[critical] [FATAL] Call to invalid or unregistered function at guest address 0x40D016D0
+```
+
+`0x40D016D0 = 0x40D00060 + 0x1670`，即**在 PNG 文件缓冲内部**——某个 bctrl 把数据
+当函数指针调了。方向：
+1. 可能是我们 `[fix-entry]/[fix-86528]` 的中和让某结构留下半初始化状态，
+   后续阶段按“解码成功”继续走，读到伪造的指针；
+2. 也可能格式 3 返回 0 并不是真正解码成功（`>=0` 判定太宽松），需要看
+   `sub_8214A588` 的语义；
+3. `en-en` 本地化目录在游戏数据中缺失（只有 de/es/fr/it/ja/ko/pt/zh-cht），
+   所有 `game:/ui/**/en-en/*` 打开都 FAILED，随后走根目录回退。若要更贴近
+   真机行为，可考虑给 `en-en` 做一份根目录内容的副本（纯数据层面，待验证）。
+
+### 9.7 工具
+
+- `tools/find_png_codec.py`：验证 XEX 解压后 `file offset → guest 地址` 映射
+  （header size 0x2000、image base 0x82000000），并用 0x8232E038 的
+  `mr r3,r5` 字节自校验；可搜 PNG 字符串/被引用位置
+- `tools/find_png_refs.py`：扫 lis/addi 对，列出指向指定 .rdata 页的代码引用
+- 解压 XEX：`xextool.exe -e u -o dd_dec.xex game/default.xex`

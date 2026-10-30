@@ -28,6 +28,10 @@ includes = []
 # 运行时间接调用目标（自动扫描补入 14:55:18）
 0x82187348 = { name = "FUN_82187348" }
 
+# 运行时间接调用目标（build33 运行补入：technosLegal 屏幕后 titlePage 加载时
+# "Call to invalid or unregistered function at guest address 0x8232E038"）
+0x8232E038 = { name = "FUN_8232E038" }
+
 # ==========================================================
 # 调试探针（临时）：定位 866B0 不返回/崩溃根因。见 src/hooks.cpp。用完移除。
 # ==========================================================
@@ -95,4 +99,158 @@ return = false
 address = 0x821867E4
 name = "DoubleDragon_ProbeE4"
 registers = ["r3", "r31"]
+return = false
+
+# ---- v5：BD0→A18 链 r1 摧毁点定位 ----
+[[entrypoint.midasm_hook]]
+address = 0x821497F8
+name = "DoubleDragon_Probe497F8"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8214984C
+name = "DoubleDragon_Probe4984C"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82184950
+name = "DoubleDragon_Probe84950"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x821498EC
+name = "DoubleDragon_Probe498EC"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82184BD0
+name = "DoubleDragon_ProbeBD0"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x822099E0
+name = "DoubleDragon_Probe99E0"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82184C28
+name = "DoubleDragon_ProbeC28"
+registers = ["r31"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82184C60
+name = "DoubleDragon_ProbeC60"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82184C74
+name = "DoubleDragon_ProbeC74"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82184D2C
+name = "DoubleDragon_ProbeD2C"
+registers = ["r3", "r31"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82184A18
+name = "DoubleDragon_ProbeA18"
+registers = ["r3"]
+return = false
+
+# ---- v6 修复：SEH throw 助手无害化 + A18 接口块补洞 ----
+[[entrypoint.midasm_hook]]
+address = 0x821478F0
+name = "DoubleDragon_FixThrow"
+registers = ["r3"]
+return = true
+
+[[entrypoint.midasm_hook]]
+address = 0x82184A3C
+name = "DoubleDragon_FixA18Iface"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82184A70
+name = "DoubleDragon_GuardA18Loop"
+registers = ["r31"]
+return = false
+
+# ---- v8：JPEG 标记扫描器 86528 坏块中和 ----
+[[entrypoint.midasm_hook]]
+address = 0x82186528
+name = "DoubleDragon_ProbeEnter86528"
+registers = ["r3"]
+return = false
+
+# ---- v9：格式分发循环 sub_8214B318（9 种格式逐个尝试）观察探针 ----
+[[entrypoint.midasm_hook]]
+address = 0x8214B298
+name = "DoubleDragon_TraceFmt0"
+registers = ["r3", "r4", "r5"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8214A2A0
+name = "DoubleDragon_TraceFmt5"
+registers = ["r3", "r4", "r5"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8214ADF8
+name = "DoubleDragon_TraceFmt4"
+registers = ["r3", "r4", "r5"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8214A588
+name = "DoubleDragon_TraceFmt3"
+registers = ["r3", "r4", "r5"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82147CF0
+name = "DoubleDragon_TraceFmt8"
+registers = ["r3", "r4", "r5"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x821480F8
+name = "DoubleDragon_TraceFmt7"
+registers = ["r3", "r4", "r5"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82149B78
+name = "DoubleDragon_TraceFmt2"
+registers = ["r3", "r4", "r5"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x82148C38
+name = "DoubleDragon_TraceFmt6"
+registers = ["r3", "r4", "r5"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8214B4AC
+name = "DoubleDragon_TraceFmtRet"
+registers = ["r3"]
+return = false
+
+[[entrypoint.midasm_hook]]
+address = 0x8214B560
+name = "DoubleDragon_TraceFmtOk"
+registers = ["r30"]
 return = false
