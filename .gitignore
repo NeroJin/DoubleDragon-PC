@@ -1,0 +1,39 @@
+# ---- CMake / VS 构建产物 ----
+/build/
+/out/
+CMakeUserPresets.json
+.vs/
+
+# 编译中间产物（万一落到源码目录）
+*.obj
+*.pch
+*.ipch
+*.lib
+*.exp
+*.ilk
+*.pdb
+*.idb
+
+# ---- 运行时产物 ----
+/release/
+/logs/
+*.log
+
+# ---- 运行配置：含 license_mask 等本机设置，不入库（首次运行自动生成）----
+DoubleDragon.toml
+
+# ---- 游戏素材：绝不入库（版权 + 体积）----
+# game/ 下只保留 .gitkeep 占位，其余全部忽略。
+/game/*
+!/game/.gitkeep
+*.xex
+*.xpr
+*.bik
+*.wmv
+*.xma
+
+# ---- 重编译产出：不入库（版权）----
+# generated/ 是从游戏 PPC 机器码反编译出的等价 C++（游戏专有逻辑），
+# 公开即公开游戏版权内容；且必须由用户自备原始 default.xex 在本地生成。
+# 克隆后先跑 `rexglue init` 重建 generated/rexglue.cmake，再 codegen。
+**/generated/
