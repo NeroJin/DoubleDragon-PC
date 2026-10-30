@@ -887,3 +887,51 @@ game/ui/en-en/StringTable.xus  ==  game/ui/de-de/StringTable.xus   (md5 85157587
 
 xenia_canary 表现一致，进一步说明是游戏自带的模拟器输出，而不是我们的 XMA/SDL 路径问题。
 想听"好版本"只能听 1988 年的编曲专辑（Original Sound of Double Dragon），游戏内没有。
+
+## 18. 简体中文（zh-cn 语言新增，不动原版繁体）（2026-10-31 凌晨）
+
+### 结论
+原版繁体 `zh-cht/` 零改动；新增独立 `zh-cn/` 简体资源，由 `ui_lang_simp` 开关在
+运行时把语言重定向过去。繁/简/英三语言可切换，入口在 Double Dragon 启动器的
+「界面语言」下拉框（写 toml），或命令行 `--user_language=8 --ui_lang_simp=true`。
+
+### 原理（逆向确认）
+- 语言目录名表在 guest 镜像里是 **UTF-16BE 宽字符串表**（`dd_dec.xex` 偏移 0x60B0）：
+  `"en-us" "pt-pt" "zh-cht" "ko-kr" "it-it" "es-es" "fr-fr" "de-de" "ja-jp" "en-en"`，
+  每个 `\0` 结尾、2 字节对齐、紧密排列。游戏按 XGetLanguage 枚举取名拼
+  `game\ui\<目录>\...` 路径。XEX 文件本体搜不到这些字符串（段落压缩），
+  解包镜像里才有。
+- 简体实现 = `OnPostLaunchModule`（主 guest 线程已创建、尚未执行）时扫描
+  guest 内存 `0x82000000..0x84000000`，把 `"zh-cht"`（12 字节宽字符）就地改写为
+  `"zh-cn\0"`（等长）。命中点在只读映射页，**直接写会 guest AV**（实测
+  0x820040B0），必须先 `VirtualProtect(PAGE_READWRITE)` 写完再还原。
+- 字体无需新加：游戏自带 `arial.ttf`（裁剪版 TTF，无 maxp 表）cmap 覆盖约
+  20902 个 CJK 汉字，简体常用字（简/龙/双/门…）全部有字形。
+
+### 资源生成（tools/t2s_stringtable.py，幂等）
+- `XUIS` 串表格式：`"XUIS"` + u32LE 版本 + **u16BE 文件大小** + **u16BE 字符串
+  「对」数** + `[u16BE 长度][UTF-16BE 数据]` 流；每对 = 值、键名（键名 ASCII `TXT_*`）。
+  zh-cht 串表 7240 B / 130 对 / 260 条。
+- OpenCC `t2s`（opencc-python-reimplemented）逐字 1:1 映射，UTF-16 字节数不变
+  （91 条含繁体字，7240B -> 7240B），头部大小字段自然不变。
+- 除 `ui\zh-cn\StringTable.xus` 外还镜像三类语言资源（游戏按语言目录相对查找，
+  缺一个就 NtCreateFile FAILED）：
+  - `ui\skins\Graphics\zh-cn\`（按键音 + 按钮图，镜像 en-en 子目录 + 根目录兜底）
+  - `ui\skins\zh-cn\skin_main.xus`（每语言皮肤布局，镜像 zh-cht）
+  - `ui\screens\zh-cn\`（镜像 zh-cht 的 45 个文件 + screens 根目录共享图补齐，
+    共 196 个；Bar.png/advert_*/Button* 等在根目录，各语言子目录原来就缺）
+
+### 顺手修复（从 STFS 原包提取）
+- `ui\skins\Graphics\en-en\btn_Select.wav`（94,284 B）与 `Select.wav`（129,312 B）：
+  之前按键无声的根因是解包缺了这两个文件，原 LIVE 包里有，已按「条目 size 字段
+  与 RIFF 长度互证」的方式提取补上。
+- STFS 目录项布局（自逆向校准）：`[u32 created][u32 modified][name 0x28]
+  [u32?][u32?][u32?][u32 size BE][8B 时间戳]`，条目 0x40 步进、size 在 name+0x34
+  （大端 u32）；文件数据起点用内容魔数互证（arial.ttf @LBA1804、zh-cht 串表 @LBA6112）。
+
+### 启动器（D:/Projects/DoubleDragon.Loader，从 TimePilot.Loader 复制改造）
+- 全库改名 TimePilot->DoubleDragon，`TitleId = 0x5841085F`，exe/toml 名对应。
+- 画质组新增「界面语言」下拉：English(1) / 繁體中文(8) / 简体中文(8+ui_lang_simp)。
+- toml 模板补 `user_language` / `ui_lang_simp` 说明。
+- 注意：启动器重新解包会整体替换 game/，之后需重跑
+  `tools/fix_lang_assets.py` 和 `tools/t2s_stringtable.py` 重建 en-en/zh-cn 修复。

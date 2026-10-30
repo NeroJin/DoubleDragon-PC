@@ -7,12 +7,18 @@
 #include <rex/rex_app.h>
 #include <rex/cvar.h>
 #include <rex/logging.h>
+#include <rex/system/thread_state.h>
+#include <rex/system/xthread.h>
 
 #include <filesystem>
 #include <windows.h>
 
 // crashdump.cpp：guest 崩溃时打印 PPC 调用栈（开发期辅助）
 void InstallGuestCrashDump();
+
+// lang_redirect.cpp：ui_lang_simp=true 时把 guest 内存里的语言目录名
+// "zh-cht" 改写成 "zh-cn"，使游戏读取简体中文串表（见 lang_redirect.cpp 注释）。
+void DoubleDragon_InstallUiLanguageRedirect(rex::runtime::ThreadState* ts);
 
 // 从 exe 所在目录向上回溯，找到含 "game" 子目录的项目根，
 // 把 game_data_root 钉死到 <root>/game。
@@ -59,9 +65,13 @@ class DoubledragonApp : public rex::ReXApp {
   }
 
   // 主 guest 线程已创建、尚未开始执行：在这里装崩溃转储，能盖掉运行时自己的过滤器。
+  // ui_lang_simp=true 时同时改写 guest 内存里的语言目录名（zh-cht -> zh-cn），
+  // 此时镜像已载入、游戏尚未读任何 UI 资源，是最安全的改写时机。
   void OnPostLaunchModule(rex::system::XThread* thread) override {
-    (void)thread;
     InstallGuestCrashDump();
+    if (thread) {
+      DoubleDragon_InstallUiLanguageRedirect(thread->thread_state());
+    }
   }
 
   // 保持垂直同步开启。
