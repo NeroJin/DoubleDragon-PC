@@ -396,3 +396,39 @@ run46 抓到**同一坏值被从很多不同调用点调用**，且 `r3/r31` 恒
    - 是 hook 污染 → 撤回对应写入。
 
 （陷阱代码是临时调试用，确认根因后应从 `DoubleDragon_pch.h` 移除。）
+
+---
+
+## 11. `game_dir not mounted` 启动致命错误（build46 新增）
+
+### 11.1 现象
+用户在 GUI 下运行 build45 的 exe，启动即弹 **`Fatal Error: game_dir not mounted`**
+（红色叉号对话框，只有 OK 按钮）。这是比 `0x40D016D0` 更靠前的**启动期**阻塞——
+资源目录根本没挂上，游戏读不到 XEX/UI/PNG。
+
+### 11.2 根因
+- recomp 框架（`rexruntime.lib`，CVar `FLAGS_game_data_root_storage_`）用
+  `game_data_root` 把宿主 `game/` 目录挂载成 guest 的内容目录（按 XEX title_id 定位）。
+- `src/DoubleDragon_app.h` 此前**没有重写 `OnConfigurePaths`**，完全依赖框架默认。
+  框架默认按**当前工作目录（CWD）**解析 `game_root = "game"`。
+- 双击 exe 启动 → CWD = exe 所在目录（`build/Release/`），那里没有 `game/` →
+  挂载失败 → 游戏（`OnPostSetup` 之后、guest 启动前）检测到内容目录未挂载 → 弹
+  `game_dir not mounted`。
+- 之前 run40–46 能复现 `0x40D016D0`，是因为那几次都是**从项目根目录**用命令行启动
+  （CWD=项目根，`game/` 找得到），挂载成功才走到后面的解码/崩溃。
+
+### 11.3 修复（已编译进 build46）
+`src/DoubleDragon_app.h` 新增 `OnConfigurePaths` 覆盖：从 **exe 模块路径**出发向上回溯
+找到含 `game/` 子目录的项目根，把 `game_data_root` 钉死为 `<root>/game`，与启动目录无关。
+这样无论从项目根、从 `build/Release/` 双击、还是从任意子目录启动都能挂载。
+
+替代方案（不改代码）：命令行传 `--game_data_root=<绝对路径>/game`，或始终从项目根启动。
+
+### 11.4 与 `0x40D016D0` 的关系
+**两者是独立的两道关卡**。`game_dir not mounted` 是启动期资源挂载失败；`0x40D016D0` 是
+挂载成功、游戏正常加载资源后，在图像解码路径里发生的**堆/数据损坏**（见第 10 节：解码器
+块描述符 `base/size` 被涂成垃圾 `0xFFF5F603`，虚表槽位被涂成 PNG 缓冲内地址 `0x40D016D0`，
+根因是 recomp 未模拟 SEH unwinding、解码异常被 `fix-throw` 吞掉后对象状态不一致）。
+- 因此：挂好资源目录后，游戏大概率**仍会**走到 `0x40D016D0` 那一关。
+- 届时 build46 自带的陷阱会在命中 `<0x82000000` 的非法间接调用时写出
+  `D:/Projects/DoubleDragon/trap_dump.txt` 并 `_exit(2)`——把该文件贴回即可继续定位。
