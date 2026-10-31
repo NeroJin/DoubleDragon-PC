@@ -979,6 +979,27 @@ ImGui 窗口只是常驻装饰——所以「跳过原调用 + 手动 `CompleteO
 `DoubleDragon_recomp*.cpp` 里的调用点（11 处）。`tools/apply_patches.py::patch_xbl_hooks()`
 两处都做，且 pch 声明按「逐个缺失才补」注入（早先按整体 marker 判断导致新 hook 漏声明）。
 
+### 19.1 离开游戏二次确认自动确认（skip_exit_confirm）（2026-10-31）
+
+**现象**：暂停菜单选「离开游戏」会弹「您确定要结束？您将失去所有的游戏进度。」确认框
+（ReXGlue 的 `XamShowMessageBoxUI`，渲染为标题 `Message Box` 的 ImGui 窗口）。用户要求
+选「离开游戏」时直接回主菜单，不再弹该确认框。
+
+**实现**（`src/xbl_off.cpp`）
+- 新增 cvar `skip_exit_confirm`（默认 `true`，分类 `Game`）；loader 侧「跳过离开游戏确认」
+  复选框 + toml 模板写入。想恢复确认框（防误触丢进度）运行时设 `skip_exit_confirm=false`。
+- 新增 `TryAutoConfirmLeave()`：当 `XamShowMessageBoxUI(Ex)` 的正文命中离开游戏确认关键词
+  （中文「您确定要结束」/「您将失去」/「失去所有的游戏进度」；英文 `lose all`/`end the
+  game`/`are you sure`/`quit` 等）时，把结果写为首按钮「是」(=0)、补完 overlapped 并广播
+  `XN_SYS_UI(id=9)`，使游戏以为用户已确认——确认框不出现、直接退出回主菜单。
+- 该逻辑接入 `dd_hook_XamShowMessageBoxUI` 与 `dd_hook_XamShowMessageBoxUIEx`（在原有
+  `xbl_off` 联网静默判断之后），仅当文本确实匹配「离开游戏」时才自动确认，**不误伤**其它
+  对话框（成就浮层、排行榜联网提示等均不受影响）。
+
+**复用结论**：确认框是运行时 ImGui 渲染的 XAM 消息框（标题 `Message Box`），故能经 hook
+  命中。若某游戏同类确认是游戏自身标题场景画的 UI（非 XAM 调用），则需另走游戏代码补丁，
+  本机制无效——实测 Double Dragon 此处生效。
+
 ## 20. 画册（其他功能 → 原版图档）闪退：二分查找拿到 NULL 条目（2026-10-31）
 
 **现象**：进入「原版图档」立刻 FATAL `read of guest 0x00000000`；xenia_canary 正常。
