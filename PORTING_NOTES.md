@@ -1127,3 +1127,47 @@ name 字段**（`lwz r4,0(r11)`），为 0 → 该有序表里存在 name 为空
 - `UI/screens/`、`UI/skins/` —— 高清 UI 布局与皮肤
 - `UI/` 下 `zh-cn`/`zh-cht`/`ja-jp`/`en-en`… 本地化串表 + `arial.ttf` 字体
 - `game/*.png`（`GoodScore.png` 等）—— 成就/分级小图标（非游戏内美术）
+
+---
+
+## 23. 发布合规：参照 GoldenEye 范式（决策）
+
+### 23.1 决策
+采用社区主流的 **GoldenEye 007 XBLA Recomp / Banjo-Tooie Recomp / EXIT1-Recomp** 范式发布：
+- 可经 GitHub Releases 提供**预编译 `DoubleDragon.exe`**（重编译出的封装/游戏逻辑）；
+- **游戏素材（xex / ROM / 贴图 / 音频）一律由玩家用自己合法持有的 XBLA 包在本地提供**；
+- 仓库与 Release 附件**绝不附带**任何版权游戏文件，也**不提供任何指向版权游戏文件的链接**。
+
+### 23.2 为什么可行（我们的架构天然契合）
+- `build/Release/DoubleDragon.exe` 运行时从 `game/` 读取素材，自身**不内嵌**任何 xex/ROM/UI 资源；
+- `DoubleDragon.Loader`（纯 C# STFS 只读解包器，不含游戏数据）把玩家自己的 XBLA 包
+  （`.LIVE/.PIRS/.CON`）解到 `game/`；
+- `game/` 整体被 `.gitignore` 屏蔽（仅 `achievements.toml` 例外，属自制补丁）；
+- 反编译出的游戏专有代码 `**/generated/` 不入库，克隆后本地 `rexglue init` + codegen 生成。
+
+### 23.3 我们发布什么 / 不发布什么
+**发布**（可自由使用，MIT）：
+- `src/`、`tools/`、`PORTING_NOTES.md`、`README.md`、`LICENSE`、`CMakeLists.txt` 等自研工程；
+- `game/achievements.toml` 成就简体覆盖层（自制）；
+- 构建脚本 / 可选预编译 `DoubleDragon.exe`（封装层，由 `generated/` 编译而来）。
+
+**不发布**：
+- `default.xex` / `dd_dec.xex`、`game/RomData/*`、`game/UI/*`、任何素材（玩家自备）；
+- `**/generated/`（反编译游戏专有代码，版权 + 须本地生成）；
+- ReXGlue SDK 运行时 DLL（`rexruntime.dll` / `rexgpu-xenos.dll`）：再分发许可需向 ReXGlue 确认，
+  预编译包若含它们须先取得授权，否则提示用户自行从 SDK 目录取。
+
+### 23.4 法律灰度（须知）
+预编译 `DoubleDragon.exe` 内含由玩家 xex 静态重编译出的游戏逻辑（生成代码），这是重编译社区
+普遍处于灰度的环节；我们通过"素材用户自备、仓库零游戏数据、明确仅供学习研究、不链游戏文件"
+把风险压到最低，与 GoldenEye 等项目的公开做法一致。是否进一步分发 exe 由发布者自行决策，
+且须确认本地已合法持有原版。
+
+### 23.5 社区参照
+- **GoldenEye 007 XBLA Recomp**（SunJaycy / CaiusCodes，v0.9）：发 `ge.exe`/安装器，仓库零游戏数据，
+  "we do not provide links to copyrighted game files"，玩家须自备 Title ID 584108A9 的 XBLA 包。
+- **Banjo-Tooie (XBLA) Recomp**（iron-jay）：发单文件 `Banjo-Tooie.exe` 启动器（解包你的 XBLA 并运行），
+  "download contains no game data"。
+- **EXIT1-Recomp**（FluffyQuack）：发 `exit1.exe`，下载不含游戏数据，需自备 EXIT XBLA 包 + 标题更新。
+- 反例：**The Simpsons Arcade**（sp00nznet）选择**不发 exe**，要求本机 codegen + 编译——我们当前
+  源码-only 状态与之等价；采纳 GoldenEye 范式后改为"也可提供预编译 exe"。

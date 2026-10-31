@@ -57,6 +57,22 @@ D:\ReverseTools\ReXGlueSDK\bin\rexglue.exe init --project-name DoubleDragon --xe
 `build/Release/` 下需要：`DoubleDragon.exe`、`rexruntime.dll`、`rexgpu-xenos.dll`、`game/`、`DoubleDragon.toml`（首次运行自动生成）。
 两个 rexglue 运行时 dll 由 SDK 提供（`rexglue_setup_target(... GPU_PLUGINS xenos)` 会把 xenos 插件拷到 exe 旁），**未随仓库分发**——再分发许可需向 ReXGlueX 确认。
 
+## 获取与发布（GoldenEye 范式）
+
+本工程遵循 GoldenEye 007 / Banjo-Tooie XBLA Recomp 的发布范式：
+
+- **预编译 exe（可选）**：Releases 提供 `DoubleDragon.exe`，它只是重编译出的封装/游戏逻辑，
+  **不含任何游戏素材**。下载后需你自行提供 XBLA 包并解包到 `game/` 才能运行。
+- **我们不提供、也不提供任何指向版权游戏文件的链接。** 请使用你自己合法持有的
+  《双截龙》XBLA 包（`.LIVE/.PIRS/.CON`），用 `DoubleDragon.Loader` 解包到 `game/`。
+- **两条路径**：
+  1. 简易：下载 Releases 里的预编译 exe + 你自己的 XBLA 包 → 用 `DoubleDragon.Loader` 解包到 `game/`
+     → 把 exe 放到与 `game/` 同级目录并运行。
+  2. 从源码构建：见上方「构建」节（`rexglue init` → codegen → CMake 编译）。
+
+> 注：预编译 exe 由 `generated/` 反编译代码编译而来，属静态重编译的游戏逻辑，分发前请确认你已
+> 合法持有原版。仓库不含任何游戏数据，详见 `LICENSE` 与 `PORTING_NOTES.md` 第 23 节。
+
 ## 说明
 
 仅供学习与研究。游戏资源版权归原权利人所有，请使用自己合法持有的游戏文件。
