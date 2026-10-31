@@ -16,10 +16,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <atomic>
 
 #include <windows.h>
 
+#include <rex/cvar.h>
 #include <rex/memory.h>
 #include <rex/ppc/func.h>
 #include <rex/system/thread_state.h>
@@ -1130,4 +1132,45 @@ void DoubleDragon_GuardA18Loop(PPCRegister& r31) {
     }
   }
   iter = 0;
+}
+
+REXCVAR_DEFINE_BOOL(diag_nullwstr, false, "Debug",
+                    "记录 UTF-16 字符串比较遇到 NULL 操作数（画册二分查找的容忍路径）");
+
+// 画册闪退诊断：sub_82394B70 是 UTF-16 strcmp，崩溃时 r4（条目 name）为 NULL。
+// dump 正在查找的 key 字符串 + 调用者，然后由注入的 guard 按空串语义继续。
+extern "C" void DoubleDragon_NullWstrcmp(PPCContext& __restrict ctx, uint8_t* base) {
+  static int hits = 0;
+  if (!REXCVAR_GET(diag_nullwstr) || hits >= 16) return;
+  ++hits;
+  auto rd_u32 = [&](uint32_t a, bool* ok) -> uint32_t {
+    if (a < 0x1000 || a >= 0xE0000000u) { *ok = false; return 0; }
+    __try {
+      uint32_t be = 0;
+      ::memcpy(&be, base + a, 4);
+      *ok = true;
+      return __builtin_bswap32(be);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { *ok = false; return 0; }
+  };
+  auto read_utf16 = [&](uint32_t a) -> std::string {
+    if (a < 0x1000 || a >= 0xE0000000u) return "<bad-ptr>";
+    std::string out;
+    for (int i = 0; i < 96; ++i) {
+      bool ok = false;
+      uint32_t w = rd_u32(a + i * 2, &ok);
+      if (!ok) break;
+      uint16_t ch = (uint16_t)(w & 0xFFFF);
+      if (ch == 0) break;
+      if (ch >= 0x20 && ch < 0x7F) out += (char)ch;
+      else { char buf[8]; std::snprintf(buf, sizeof buf, "\\u%04X", ch); out += buf; }
+    }
+    return out;
+  };
+  std::fprintf(stderr,
+               "[nullwstr #%d] sub_82394B70 NULL operand: key(r3)=0x%08X '%s' "
+               "entry(r4)=0x%08X lr=0x%08X\n",
+               hits, ctx.r3.u32,
+               ctx.r3.u32 ? read_utf16(ctx.r3.u32).c_str() : "(null)",
+               ctx.r4.u32, (uint32_t)ctx.lr);
+  std::fflush(stderr);
 }

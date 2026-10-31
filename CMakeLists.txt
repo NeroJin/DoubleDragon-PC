@@ -23,6 +23,7 @@ set(DOUBLEDRAGON_SOURCES
     src/crashdump.cpp
     src/hooks.cpp
     src/lang_redirect.cpp
+    src/xbl_off.cpp
 )
 
 if(WIN32)

@@ -951,3 +951,60 @@ xenia_canary 表现一致，进一步说明是游戏自带的模拟器输出，�
   （前者游戏回退到 skins 根目录的同名文件，后者全库无此文件、属死引用）。
 - 实机截图验证：主菜单/暂停选单全部简体（继续游戏/说明与选项/排行榜/成就/
   其他功能/离开游戏/选择/返回）。
+
+## 19. XBL 联网提示静默化（xbl_off）（2026-10-31）
+
+**现象**：开局/回主菜单时常弹「本设定档并未连线至 Xbox Live…」消息框（ReXGlue 运行时
+的 ImGui Message Box；默认字体无 CJK，中文全显示成 `?`）。用户要求别弹，但**成就/
+排行榜那类主动查询的弹窗要保留**。
+
+**关键事实**：ReXGlue 对消息框是**立即完成** overlapped（约 100 ms deferred），那个
+ImGui 窗口只是常驻装饰——所以「跳过原调用 + 手动 `CompleteOverlappedImmediate` +
+广播 `XN_SYS_UI(id=9)`」是安全等价的，不会卡住调用方。
+
+**实现**
+- `src/xbl_off.cpp`：`dd_hook_XamShowMessageBoxUI` 等 7 个 hook。先读 guest 宽字符串
+  （UTF-16BE）打日志，再按策略处理：命中开局提示关键字（`最高分`/`并未连线`/`並未連線`）
+  就写 `*pdwResult=0`、广播 XN_SYS_UI 1→完成→0、`r3=0` 返回；否则原样调
+  `__imp__XamX` 透传（成就/排行榜弹窗照旧）。
+- `XamShowAchievementsUI` 特殊：运行时侧是 STUB，不完成 overlapped → 演示流程会崩。
+  xbl_off 打开时直接写 `*pdwResult=0` 并完成 `r8`（overlapped）。
+- cvar `xbl_off`（默认 `true`，分类 `Game`）；loader 侧「关闭 Xbox LIVE 联网提示」复选框
+  + toml 模板写入。
+- 第 9 个参数（XOVERLAPPED*）在 `r1+0x54`：由 `sub_821215B8` 的 `lwz r11,180(r1);
+  stw r11,84(r1)`（stwu r1,-96）反推。
+
+**踩坑**：只改 `DoubleDragon_init.cpp` 的导入映射表**完全无效**——codegen 把导入 thunk
+的调用点直接内联成 `__imp__XamX(ctx, base);` 宿主调用，不查映射表。必须同时替换
+`DoubleDragon_recomp*.cpp` 里的调用点（11 处）。`tools/apply_patches.py::patch_xbl_hooks()`
+两处都做，且 pch 声明按「逐个缺失才补」注入（早先按整体 marker 判断导致新 hook 漏声明）。
+
+## 20. 画册（其他功能 → 原版图档）闪退：二分查找拿到 NULL 条目（2026-10-31）
+
+**现象**：进入「原版图档」立刻 FATAL `read of guest 0x00000000`；xenia_canary 正常。
+
+**先排除的**：4 张海报全在（`DD_Flyer_US_Front/US_Back/Jp_Front/Jp_Back.png`）、界面
+`screen_viewflyer.xur` 也在；`Skins\Bar.png`、`Empire_Logo_Large.png` 的补档也与本崩溃
+无关（A/B 全同）。也不是 xbl_off 拦截导致的（`--xbl_off=false` 崩得一模一样）。
+
+**崩溃链**（GUEST CRASH dump 逐层回溯）
+```
+sub_820FC588  按名字取对象，取不到就用原对象
+ └ sub_82104070   读全局表指针（0x821D942C）
+    └ sub_8232FB60  表有效性检查（sub_8218DD58）
+       └ sub_8234E5C0  在 {count, ?, entries} 有序表里二分查 UTF-16 key
+          └ sub_82394B70  UTF-16 strcmp —— 崩在 $+0x52 的 `lhz r10,0(r4)`，r4 = NULL
+```
+`r3`（key）= `0x7018EA10` → 内容是 `" 1/4"`（本地化后是「页 1/4」）；`r4` 是**表条目的
+name 字段**（`lwz r4,0(r11)`），为 0 → 该有序表里存在 name 为空的条目。
+
+**修复**（`tools/apply_patches.py` 注入 `sub_82394B70` 入口 guard）
+- `r3`/`r4` 任一为 0 时不进比较循环，按「空串」语义返回：两者都空→0，r3 非空→1，
+  r3 空→-1（即 NULL 条目视为小于任何非空 key），二分查找继续、不再解引用 guest 0。
+- 诊断输出由 cvar `diag_nullwstr`（默认 `false`）控制：打开后可看到
+  `[nullwstr] sub_82394B70 NULL operand: key=' 1/4' entry=0x00000000 lr=0x8234E610`。
+- 不改游戏逻辑，只补运行时对「空条目」的容忍（xenia 下同样数据不崩，说明原版链路上
+  这个空槽本不该被解引用到）。
+
+**实测**：页 1/4 = `DD_Flyer_US_Front`（默认页）、2/4 = HOW TO PLAY（US 背面）、
+3/4 = 日版封面、4/4 = 日版说明；A 放大 / Y 缩小 / B 返回都正常，退出再进两次仍稳定。

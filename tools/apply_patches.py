@@ -118,6 +118,26 @@ SKIP_BODY = """\t// hooks.cpp：非 JPEG 数据不进 JPEG 解码器（否则走
 \t}
 """
 
+# XBL 观察/拦截：init.cpp 的导入映射把这几个调用改道到 src/xbl_off.cpp 的
+# dd_hook_*（先记录、再回调原实现）。声明注入进 pch（init.cpp include 它）。
+XBL_HOOKS = [
+    "XamShowAchievementsUI",
+    "XamShowMessageBoxUI",
+    "XamShowMessageBoxUIEx",
+    "XamShowSigninUI",
+    "XamUserGetSigninState",
+    "XamUserCheckPrivilege",
+    "XamContentGetLicenseMask",
+]
+
+XBL_DECLS_MARKER = "dd_hook_XamShowMessageBoxUI"
+XBL_DECLS_HEADER = (
+    "\n//=============================================================================\n"
+    "// XBL 观察/拦截钩子（src/xbl_off.cpp 定义；tools/apply_patches.py 注入声明，\n"
+    "// DoubleDragon_init.cpp 的导入映射已改道到这里）\n"
+    "//=============================================================================\n"
+)
+
 
 def patch_pch() -> bool:
     p = GEN / "DoubleDragon_pch.h"
@@ -218,6 +238,91 @@ def patch_orphan_gotos() -> int:
     return fixed
 
 
+# UTF-16 strcmp（sub_82394B70）NULL 保护：画册（screen_viewflyer）的二分查找
+# 会拿到 name==NULL 的条目，guest 读 0 直接 FATAL。guard 里 dump key/lr，
+# 然后按"空串"语义返回（NULL 条目恒小于非空 key），让查找继续。
+WSTRCMP_ADDR = "82394B70"
+WSTRCMP_EXTERN = (
+    'extern "C" void DoubleDragon_NullWstrcmp(PPCContext& __restrict ctx, '
+    'uint8_t* base);\n\n'
+)
+WSTRCMP_BODY = (
+    "\t// hooks.cpp：条目 name / key 为 NULL 时 dump 后按空串语义比较并返回，\n"
+    "\t// 不再对 guest 0 解引用（xenia 下同样数据不崩，这里做等价容忍）。\n"
+    "\tif (ctx.r3.u32 == 0 || ctx.r4.u32 == 0) {\n"
+    "\t\tDoubleDragon_NullWstrcmp(ctx, base);\n"
+    "\t\tctx.r3.u64 = (ctx.r3.u32 == ctx.r4.u32) ? 0 : (ctx.r3.u32 ? 1 : -1);\n"
+    "\t\treturn;\n"
+    "\t}\n"
+)
+WSTRCMP_MARKER = "DoubleDragon_NullWstrcmp("
+
+
+def patch_xbl_hooks() -> None:
+    """把选定 XAM 调用改道到 dd_hook_*。
+
+    两处都要改：
+      1. recomp*.cpp 里的直接调用 `__imp__XamX(ctx, base);` —— 这是游戏实际走的路
+         （codegen 对导入 thunk 的调用点直接内联成宿主函数调用，不查映射表）；
+      2. init.cpp 的导入映射表 —— 覆盖"函数指针间接调用同一 thunk"的情况。
+    声明注入 pch（recomp*.cpp 与 init.cpp 都 include 它）。
+    """
+    # 1) 直接调用点
+    sites = 0
+    for p in sorted(GEN.glob("DoubleDragon_recomp*.cpp")):
+        s = p.read_text(encoding="utf-8", errors="surrogateescape")
+        orig = s
+        for t in XBL_HOOKS:
+            old = f"__imp__{t}(ctx, base);"
+            new = f"dd_hook_{t}(ctx, base);"
+            if new in s:
+                continue
+            if old in s:
+                sites += s.count(old)
+                s = s.replace(old, new)
+        if s != orig:
+            p.write_text(s, encoding="utf-8", errors="surrogateescape")
+    print(f"  recomp*.cpp: {sites} 个 XAM 直接调用已改道" if sites
+          else "  recomp*.cpp: 调用点已是改道状态")
+
+    # 2) 导入映射表（间接调用覆盖）
+    init_p = GEN / "DoubleDragon_init.cpp"
+    if not init_p.exists():
+        sys.exit("patch_xbl_hooks: DoubleDragon_init.cpp 不存在")
+    s = init_p.read_text(encoding="utf-8", errors="surrogateescape")
+    replaced = 0
+    for t in XBL_HOOKS:
+        tok = f"__imp__{t}"
+        new = f"dd_hook_{t}"
+        if new in s:
+            continue
+        if tok in s:
+            s = s.replace(tok, new)
+            replaced += 1
+    if replaced:
+        init_p.write_text(s, encoding="utf-8", errors="surrogateescape")
+        print(f"  init.cpp: {replaced} 个导入映射已改道")
+    else:
+        print("  init.cpp: 映射已是改道状态")
+
+    # 3) pch 声明（幂等：按 marker 判断）
+    pch_p = GEN / "DoubleDragon_pch.h"
+    p = pch_p.read_text(encoding="utf-8", errors="surrogateescape")
+    # pch 声明（幂等：逐个检查缺失的声明再补）
+    pch_p = GEN / "DoubleDragon_pch.h"
+    p = pch_p.read_text(encoding="utf-8", errors="surrogateescape")
+    missing = [t for t in XBL_HOOKS if f"dd_hook_{t}" not in p]
+    if missing:
+        if XBL_DECLS_MARKER not in p:
+            p += XBL_DECLS_HEADER
+        p += "".join(
+            f'extern "C" void dd_hook_{t}(PPCContext& __restrict ctx, uint8_t* base);\n'
+            for t in missing
+        )
+        pch_p.write_text(p, encoding="utf-8", errors="surrogateescape")
+        print(f"  pch: 补充 {len(missing)} 个 dd_hook_* 声明")
+
+
 def main() -> None:
     if not GEN.exists():
         sys.exit(f"missing {GEN}")
@@ -225,7 +330,9 @@ def main() -> None:
     patch_pch()
     patch_func("82186528", ABORT_EXTERN, ABORT_BODY, "DD_TakeDecodeAbort()")
     patch_func("821497F8", SKIP_EXTERN, SKIP_BODY, "DoubleDragon_SkipJpeg(ctx.r4")
+    patch_func(WSTRCMP_ADDR, WSTRCMP_EXTERN, WSTRCMP_BODY, WSTRCMP_MARKER)
     patch_orphan_gotos()
+    patch_xbl_hooks()
     print("done")
 
 
