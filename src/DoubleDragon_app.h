@@ -8,10 +8,16 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/system/thread_state.h>
+#include <rex/system/kernel_state.h>
 #include <rex/system/xthread.h>
+#include <rex/ui/keybinds.h>
 
 #include <filesystem>
 #include <windows.h>
+
+#include "generated/default/DoubleDragon_init.h"  // PPCImageConfig
+
+#include "achievements_dialog.h"
 
 // crashdump.cpp：guest 崩溃时打印 PPC 调用栈（开发期辅助）
 void InstallGuestCrashDump();
@@ -45,14 +51,34 @@ inline std::filesystem::path ResolveGameDataRoot() {
   return exe_dir / "game";
 }
 
+class DoubledragonApp;
+
+// App 单实例指针。定义在 src/hooks.cpp（xbl_off.cpp 的成就钩子也用它）。
+extern DoubledragonApp* g_doubledragon_app;
+
 class DoubledragonApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
 
   static std::unique_ptr<rex::ui::WindowedApp> Create(
       rex::ui::WindowedAppContext& ctx) {
-    return std::unique_ptr<DoubledragonApp>(new DoubledragonApp(ctx, "DoubleDragon",
+    auto app = std::unique_ptr<DoubledragonApp>(new DoubledragonApp(ctx, "DoubleDragon",
         PPCImageConfig));
+    g_doubledragon_app = app.get();
+    return app;
+  }
+
+  // 供 PPC 钩子调用（xbl_off.cpp 的 dd_hook_XamShowAchievementsUI）：
+  // 切到 UI 线程再动 ImGui 对象（ImGui 非线程安全）。
+  // F7 与游戏菜单共用本函数 → 全程只有浮层的单一实例。
+  void ToggleAchievementsOverlay() {
+    app_context().CallInUIThreadDeferred([this]() {
+      if (achievements_dialog_) {
+        achievements_dialog_->CloseFromApp();  // 下一帧 Draw 末尾自删
+      } else {
+        OpenAchievementsOverlay();
+      }
+    });
   }
 
   // 启用 Xenos GPU 模拟插件。
@@ -93,6 +119,31 @@ class DoubledragonApp : public rex::ReXApp {
                 rex::cvar::GetFlagByName("host_present_from_non_ui_thread"));
   }
 
+  // 默认字体只带简体常用字形（GetGlyphRangesChineseSimplifiedCommon），
+  // 而成就/串表文本来自原版（繁体），「兩」「續」「擊」这类字会显示成 `?`。
+  // 在图集构建前合并一份系统字体的完整 CJK 字形，覆盖全部汉字。
+  void OnConfigureFonts(ImFontAtlas* atlas) override {
+    if (!atlas) return;
+    ImFontConfig cfg;
+    cfg.MergeMode = true;          // 合并进默认字体，沿用其行高/字号
+    cfg.PixelSnapH = true;
+    cfg.GlyphOffset = ImVec2(0.0f, 0.0f);
+    static const char* kCandidates[] = {
+        "C:/Windows/Fonts/msyh.ttc",    // 微软雅黑
+        "C:/Windows/Fonts/msyhl.ttc",
+        "C:/Windows/Fonts/simhei.ttf",  // 黑体
+        "C:/Windows/Fonts/simsun.ttc",  // 宋体
+    };
+    for (const char* path : kCandidates) {
+      if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) continue;
+      if (atlas->AddFontFromFileTTF(path, 16.0f, &cfg,
+                                    atlas->GetGlyphRangesChineseFull())) {
+        REXLOG_INFO("imgui: 合并中文字形 {}", path);
+        break;
+      }
+    }
+  }
+
   // 把运行时日志落盘，抓 GPU/present/输入等真实报错（GUI 下 stderr 看不到）。
   void OnConfigureLogging(rex::LogConfig& config) override {
     config.log_file = ResolveGameDataRoot().parent_path() / "rex_runtime.log";
@@ -106,16 +157,48 @@ class DoubledragonApp : public rex::ReXApp {
     paths.game_data_root = ResolveGameDataRoot();
   }
 
-  // Override virtual hooks for customization:
-  // void OnPostInitLogging() override {}
-  // void OnPreSetup(rex::RuntimeConfig& config) override {}
-  // void OnLoadXexImage(std::string& xex_image) override {}
-  // void OnPostLoadXexImage() override {}
-  // void OnPostSetup() override {}
-  // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
-  // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
-  // std::unique_ptr<rex::ui::AchievementNotificationDialog>
-  // CreateAchievementNotificationDialog() override;
-  // void OnShutdown() override {}
-  // void OnConfigurePaths(rex::PathConfig& paths) override {}
+ protected:
+  // SetupOverlays 末尾调用（内置键位已注册）。把内置 F7 绑定替换成
+  // 我们的 Toggle——否则内置绑定会创建第二份浮层实例，互相"看起来失灵"。
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    (void)drawer;
+    rex::ui::UnregisterBind("bind_achievements");
+    rex::ui::RegisterBind("bind_achievements", "F7",
+                          "Toggle achievements overlay",
+                          [this] { ToggleAchievementsOverlay(); });
+  }
+
+  // 关机时浮层可能还开着：先手动删（此时 drawer/input system 仍存活），
+  // 避免其析构回调在 App 部分析构后触碰 runtime()。
+  void OnDestroy() override {
+    if (achievements_dialog_) {
+      auto* dialog = achievements_dialog_;
+      achievements_dialog_ = nullptr;  // 防止析构回调重入
+      delete dialog;
+    }
+  }
+
+ private:
+  void OpenAchievementsOverlay() {
+    // 浮层打开期间手柄输入不进游戏（guest 读到空手柄），关浮层即恢复。
+    auto* input = static_cast<rex::input::InputSystem*>(runtime()->input_system());
+    if (input) {
+      input->AddUIInputBlocker();
+    }
+    achievements_dialog_ = new DoubleDragonAchievementsDialog(
+        imgui_drawer(), immediate_drawer(), runtime(), &achievements(),
+        [this] {
+          achievements_dialog_ = nullptr;
+          auto* in =
+              static_cast<rex::input::InputSystem*>(runtime()->input_system());
+          if (in) {
+            in->RemoveUIInputBlocker();
+          }
+        });
+  }
+
+  // 带手柄导航的成就浮层。ImGuiDialog 遵循 self-deleting 惯例
+  // （Close 后下一帧 Draw 末尾 delete this，析构回调清指针），
+  // 所以这里必须是裸指针而非 unique_ptr。
+  DoubleDragonAchievementsDialog* achievements_dialog_ = nullptr;
 };

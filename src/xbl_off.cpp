@@ -22,6 +22,8 @@
 
 #include <windows.h>
 
+#include "DoubleDragon_app.h"
+
 // 原实现（rexruntime.dll 导入符号；apply_patches.py 已把 init.cpp 的映射指到
 // 下面的 dd_hook_*，这里再回调原实现，行为除日志外完全不变）
 extern "C" {
@@ -159,21 +161,24 @@ bool TrySuppressLivePopup(PPCContext& ctx, uint8_t* base, const char* which,
 // 运行时此函数是 STUB（直接返回、不完成 overlapped），游戏等不到结果就会空指针
 // 崩溃（演示流程自动进"成就"画面时必现）。xbl_off 时直接补完成事件。
 extern "C" void dd_hook_XamShowAchievementsUI(PPCContext& ctx, uint8_t* base) {
-  REXLOG_INFO("[xbl] ShowAchievementsUI user={} view={} pdwResult={:#x} ovl={:#x}",
-              ctx.r3.u32, ctx.r4.u32, ctx.r7.u32, ctx.r8.u32);
-  if (REXCVAR_GET(xbl_off) && ctx.r8.u32 >= 0x1000 && ctx.r8.u32 < 0xE0000000u) {
-    WriteGuestU32(base, ctx.r7.u32, 0);  // *pdwResult = 0
-    auto* ks = rex::runtime::current_kernel_state();
-    if (ks) {
-      ks->BroadcastNotification(rex::system::XNotificationID(kXnSysUi), 1);
-      ks->CompleteOverlappedImmediate(ctx.r8.u32, 0);
-      ks->BroadcastNotification(rex::system::XNotificationID(kXnSysUi), 0);
-    }
-    REXLOG_INFO("[xbl] 静默完成 ShowAchievementsUI（overlapped={:#x}）", ctx.r8.u32);
-    ctx.r3.u64 = 0;
-    return;
-  }
+  // 真实签名：DWORD XamShowAchievementsUI(DWORD user, DWORD flags, XOVERLAPPED* ovl)
+  // —— 游戏侧包装 sub_82121590 是 `li r4,0; b 0x823ad0bc`，所以 overlapped 在 r5。
+  REXLOG_INFO("[xbl] ShowAchievementsUI user={} flags={} ovl={:#x}", ctx.r3.u32,
+              ctx.r4.u32, ctx.r5.u32);
+  // 完全不碰 overlapped / XN_SYS_UI，先让原实现（运行时是 STUB）照常返回。
+  // 游戏因此认为"成就 UI 没打开"，继续按原来的错误分支走（实测不崩），
+  // 我们只把本地成就浮层叠上去 —— 和 TimePilot 的 hook 同一思路。
+  // 反例（都试过，全部崩）：
+  //   a) CompleteOverlappedImmediate + 广播 XN_SYS_UI 1/0 → guest 内立即重入
+  //      完成回调，read of guest 0x14（vtable 为 NULL）；
+  //   b) 只广播"打开"、留 overlapped 到浮层关闭再完成 → 完成动作只能在 UI
+  //      线程发起，运行时内部要 ThreadState，崩在 "no ThreadState bound"；
+  //   c) 只 deferred 完成不广播 → 游戏当帧就去读结果，read of guest 0x3F9。
   __imp__XamShowAchievementsUI(ctx, base);
+  if (REXCVAR_GET(xbl_off) && g_doubledragon_app) {
+    REXLOG_INFO("[xbl] 打开本地成就浮层");
+    g_doubledragon_app->ToggleAchievementsOverlay();
+  }
 }
 
 // XamShowMessageBoxUI(user, title*, text*, cButtons, buttons**, focus, flags,

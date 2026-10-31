@@ -1008,3 +1008,44 @@ name 字段**（`lwz r4,0(r11)`），为 0 → 该有序表里存在 name 为空
 
 **实测**：页 1/4 = `DD_Flyer_US_Front`（默认页）、2/4 = HOW TO PLAY（US 背面）、
 3/4 = 日版封面、4/4 = 日版说明；A 放大 / Y 缩小 / B 返回都正常，退出再进两次仍稳定。
+
+## 21. 成就浮层（本地显示，不依赖 XBL）（2026-10-31）
+
+**背景**：运行时对 `XamShowAchievementsUI` 只有空桩（STUB），游戏主菜单"成就"
+点了没反应。参照 TimePilot 项目（`src/achievements_dialog.h` + App 集成）移植
+本地成就浮层，成就数据/图标由运行时从 xex 的 XDBF 元数据与 `game/` 根目录的
+成就 png（GetTheGirl.png、Hero.png 等）加载，共 12 项 200G。
+
+**集成**（与 TimePilot 相同）
+- `src/achievements_dialog.h`：`DoubleDragonAchievementsDialog`（继承
+  `rex::ui::AchievementsOverlayDialog`，自绘列表 + 手柄滚动：左摇杆模拟量平滑
+  滚动 / 十字键恒速滚动 / B 关闭）。不用 SDK 内置浮层的原因：其行无聚焦控件
+  且 GetIcon 为 private。
+- App：`OnCreateDialogs` 把内置 F7 重绑到 `ToggleAchievementsOverlay()`（防双实例）；
+  `OnDestroy` 手动删浮层；`hooks.cpp` 定义 `g_doubledragon_app` 单实例指针。
+- 钩子 `dd_hook_XamShowAchievementsUI`：真实签名是
+  `XamShowAchievementsUI(user, flags, XOVERLAPPED*)`——游戏包装 sub_82121590 是
+  `li r4,0; b 0x823ad0bc`，**overlapped 在 r5**（之前按 r8 读是错的）。先原样调用
+  STUB，再叠开浮层。
+
+**三连坑（试错记录，别再走）**——游戏对成就调用有同步的"结果处理路径"：
+  a) 完成方式一：`CompleteOverlappedImmediate(ovl)` + 同步广播 XN_SYS_UI 1/0
+     → 完成回调在 guest 线程内同步重入，游戏当帧进结果处理路径，
+     `sub_820F6558` 里 `lwz r11,20(r10)` 读到 vtable=NULL → `read of guest 0x14`；
+  b) 完成方式二：广播"打开"，overlapped 留到浮层关闭再完成 → 完成只能在 UI
+     线程发起，运行时内部要 ThreadState → host 崩 "no ThreadState bound"
+     （BeginDPCImpersonation 也救不了）；
+  c) 完成方式三：只 `CompleteOverlappedDeferred` 不广播 → 游戏当帧读结果
+     → `read of guest 0x3F9`。
+  最终方案：**完全不碰 overlapped / XN_SYS_UI**，STUB 原样返回（游戏视作
+  "UI 未打开"，走既有错误分支），浮层纯叠加。F7 与游戏菜单共用同一实例。
+
+**字体**：SDK 默认 ImGui 字体只带 `GetGlyphRangesChineseSimplifiedCommon`
+（简体常用集），而成就文本是原版繁体，「兩/續/擊」等显示成 `?`。在
+`OnConfigureFonts`（图集构建前）以 merge 模式补一份系统字体
+（msyh.ttc → simhei → simsun 依序探测）+ `GetGlyphRangesChineseFull`，
+全部汉字可显示。此修复对 ImGui 侧所有窗口（含 XBL 弹窗）生效。
+
+**实测**：成就浮层打开（0/12、0G/200G，图标与中文名/描述齐全）→ B 关闭 →
+菜单继续可用；重复打开、F7 开关均稳定；XBOX LIVE 游戏/排行榜的"必须登录"
+消息框维持原样（用户确认保留）。

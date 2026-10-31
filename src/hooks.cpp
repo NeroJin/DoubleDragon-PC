@@ -27,6 +27,8 @@
 #include <rex/system/thread_state.h>
 #include <rex/system/xmemory.h>
 
+#include "DoubleDragon_app.h"
+
 namespace {
 
 uint32_t g_86798_r1 = 0;
@@ -1174,3 +1176,7 @@ extern "C" void DoubleDragon_NullWstrcmp(PPCContext& __restrict ctx, uint8_t* ba
                ctx.r4.u32, (uint32_t)ctx.lr);
   std::fflush(stderr);
 }
+
+// App 单实例指针（DoubleDragon_app.h 里声明为 extern）。
+// 成就钩子（xbl_off.cpp）通过它打开本地成就浮层。
+DoubledragonApp* g_doubledragon_app = nullptr;
