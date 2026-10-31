@@ -30,6 +30,7 @@ extern "C" {
 void __imp__XamShowAchievementsUI(PPCContext& __restrict, uint8_t*);
 void __imp__XamShowMessageBoxUI(PPCContext& __restrict, uint8_t*);
 void __imp__XamShowMessageBoxUIEx(PPCContext& __restrict, uint8_t*);
+void __imp__XamShowMarketplaceUI(PPCContext& __restrict, uint8_t*);
 void __imp__XamShowSigninUI(PPCContext& __restrict, uint8_t*);
 void __imp__XamUserGetSigninState(PPCContext& __restrict, uint8_t*);
 void __imp__XamUserCheckPrivilege(PPCContext& __restrict, uint8_t*);
@@ -38,6 +39,9 @@ void __imp__XamContentGetLicenseMask(PPCContext& __restrict, uint8_t*);
 
 REXCVAR_DEFINE_BOOL(xbl_off, true, "Game",
                     "关闭 Xbox LIVE 联网提示：静默吞掉登录/未连线类弹窗");
+
+REXCVAR_DEFINE_BOOL(skip_exit_confirm, true, "Game",
+                    "选'离开游戏'时跳过'是否结束'二次确认，直接回主菜单");
 
 namespace {
 
@@ -93,6 +97,7 @@ bool ContainsLiveKeyword(uint8_t* base, uint32_t addr) {
   static const char* kKeywords[] = {
       "xbox", "live", "連線", "连线", "網路", "网络", "网路", "登入",
       "登录", "登錄", "線上", "线上", "伺服", "服務", "服务",
+      "排行榜", "排行", "排名", "ranking", "leaderboard",
   };
   for (const char* kw : kKeywords) {
     if (s.find(kw) != std::string::npos) return true;
@@ -125,8 +130,10 @@ bool WriteGuestU32(uint8_t* base, uint32_t addr, uint32_t value) {
 bool TrySuppressLivePopup(PPCContext& ctx, uint8_t* base, const char* which,
                           uint32_t overlapped) {
   if (!REXCVAR_GET(xbl_off)) return false;
-  // 只吞开局自动弹的"未连线至 Xbox Live…不会发布最高分数"提示；
-  // 成就/排行榜等由用户主动触发的功能提示照常显示（与 xenia_canary 行为一致）。
+  // 吞掉两类 Xbox LIVE 相关提示框：
+  //   a) 开局自动弹的"未连线至 Xbox Live…不会发布最高分数"nag；
+  //   b) 菜单主动点"Xbox Live 游戏 / 排行榜"时游戏弹出的"需联网"类消息框。
+  // 成就（XamShowAchievementsUI）走独立路径，不在本函数内，照常保留。
   std::string text = ReadUtf16BE(base, ctx.r5.u32);
   static const char* kNagKeywords[] = {"最高分", "最高分数", "最高分數",
                                        "并未连线", "並未連線"};
@@ -134,7 +141,9 @@ bool TrySuppressLivePopup(PPCContext& ctx, uint8_t* base, const char* which,
   for (const char* kw : kNagKeywords) {
     if (text.find(kw) != std::string::npos) { is_nag = true; break; }
   }
-  if (!is_nag) return false;
+  // 含 Xbox LIVE / 连线 / 线上 / 排行榜 / 排名 等关键词的联网类提示也静默吞掉。
+  bool is_live = ContainsLiveKeyword(base, ctx.r5.u32);
+  if (!is_nag && !is_live) return false;
   if (overlapped < 0x1000 || overlapped >= 0xE0000000u) return false;  // 拿不到就保守放行
 
   WriteGuestU32(base, ctx.r10.u32, 0);  // pResult 指向的按钮索引 = 0
@@ -147,6 +156,37 @@ bool TrySuppressLivePopup(PPCContext& ctx, uint8_t* base, const char* which,
   }
   REXLOG_INFO("[xbl] 静默拦截 {}：'{}'（overlapped={:#x}）", which,
               ReadUtf16BE(base, ctx.r5.u32), overlapped);
+  ctx.r3.u64 = 0;  // ERROR_SUCCESS
+  return true;
+}
+
+// 离开游戏二次确认框：暂停菜单选"离开游戏"后，游戏用 XamShowMessageBoxUI 弹出
+// "您确定要结束？您将失去所有的游戏进度。"（ReXGlue 渲染为叠在暂停菜单之上的 ImGui
+// Message Box）。用户希望选退出时直接回主菜单、不再二次确认，故 skip_exit_confirm
+// 时把结果写为首按钮"是"(=0)并补完 overlapped，跳过弹窗。
+bool TryAutoConfirmLeave(PPCContext& ctx, uint8_t* base, uint32_t overlapped) {
+  if (!REXCVAR_GET(skip_exit_confirm)) return false;
+  std::string text = ReadUtf16BE(base, ctx.r5.u32);
+  static const char* kLeaveKeywords[] = {
+      "您确定要结束", "您将失去", "结束目前的游戏",
+      "lose all", "end the current", "end the game", "quit to",
+  };
+  bool is_leave = false;
+  for (const char* kw : kLeaveKeywords) {
+    if (text.find(kw) != std::string::npos) { is_leave = true; break; }
+  }
+  if (!is_leave) return false;
+  if (overlapped < 0x1000 || overlapped >= 0xE0000000u) return false;  // 拿不到就保守放行
+
+  WriteGuestU32(base, ctx.r10.u32, 0);  // pResult = 首按钮=是(确认离开)
+
+  auto* ks = rex::runtime::current_kernel_state();
+  if (ks) {
+    ks->BroadcastNotification(rex::system::XNotificationID(kXnSysUi), 1);
+    ks->CompleteOverlappedImmediate(overlapped, 0);
+    ks->BroadcastNotification(rex::system::XNotificationID(kXnSysUi), 0);
+  }
+  REXLOG_INFO("[xbl] 自动确认离开游戏：'{}'（overlapped={:#x}）", text, overlapped);
   ctx.r3.u64 = 0;  // ERROR_SUCCESS
   return true;
 }
@@ -190,6 +230,7 @@ extern "C" void dd_hook_XamShowMessageBoxUI(PPCContext& ctx, uint8_t* base) {
   uint32_t overlapped = 0;
   ReadGuestU32(base, ctx.r1.u32 + kOverlappedStackOff, &overlapped);
   if (TrySuppressLivePopup(ctx, base, "MessageBoxUI", overlapped)) return;
+  if (TryAutoConfirmLeave(ctx, base, overlapped)) return;
   __imp__XamShowMessageBoxUI(ctx, base);
 }
 
@@ -198,7 +239,33 @@ extern "C" void dd_hook_XamShowMessageBoxUIEx(PPCContext& ctx, uint8_t* base) {
   REXLOG_INFO("[xbl] MessageBoxUIEx title='{}' text='{}' buttons={} r7={:#x} r8={:#x}",
               ReadUtf16BE(base, ctx.r4.u32), ReadUtf16BE(base, ctx.r5.u32),
               ctx.r6.u32, ctx.r7.u32, ctx.r8.u32);
+  uint32_t overlapped = 0;
+  ReadGuestU32(base, ctx.r1.u32 + kOverlappedStackOff, &overlapped);
+  if (TrySuppressLivePopup(ctx, base, "MessageBoxUIEx", overlapped)) return;
+  if (TryAutoConfirmLeave(ctx, base, overlapped)) return;
   __imp__XamShowMessageBoxUIEx(ctx, base);
+}
+
+// XamShowMarketplaceUI(user, marketplace_id, …, overlapped*) —— "Xbox Live 游戏 /
+// 排行榜"菜单项走的入口。360 商城早已关闭，这里只会产生一个打不开的 XUI / 提示框。
+// xbl_off 时直接补完 overlapped（广播 XN_SYS_UI 1→0 + 立即完成），让游戏认为用户
+// 取消了该 UI，不再弹窗；overlapped 取最后一个寄存器参数（r7，5 参调用的末参），
+// 并做 Guest 地址范围校验，越界则保守放行原实现，避免误伤/挂死。
+extern "C" void dd_hook_XamShowMarketplaceUI(PPCContext& ctx, uint8_t* base) {
+  REXLOG_INFO("[xbl] ShowMarketplaceUI user={} marketplace={:#x} overlapped(r7)={:#x}",
+              ctx.r3.u32, ctx.r4.u32, ctx.r7.u32);
+  if (REXCVAR_GET(xbl_off) && ctx.r7.u32 >= 0x1000 && ctx.r7.u32 < 0xE0000000u) {
+    auto* ks = rex::runtime::current_kernel_state();
+    if (ks) {
+      ks->BroadcastNotification(rex::system::XNotificationID(kXnSysUi), 1);
+      ks->CompleteOverlappedImmediate(ctx.r7.u32, 0);
+      ks->BroadcastNotification(rex::system::XNotificationID(kXnSysUi), 0);
+    }
+    REXLOG_INFO("[xbl] 静默拦截 ShowMarketplaceUI（overlapped={:#x}）", ctx.r7.u32);
+    ctx.r3.u64 = 0;  // ERROR_SUCCESS
+    return;
+  }
+  __imp__XamShowMarketplaceUI(ctx, base);
 }
 
 // XamShowSigninUI(user, flags, overlapped*)
@@ -260,6 +327,7 @@ extern "C" void dd_hook_XamContentGetLicenseMask(PPCContext& ctx, uint8_t* base)
 // clang-format off
 //   dd_hook_XamShowMessageBoxUI        <- __imp__XamShowMessageBoxUI
 //   dd_hook_XamShowMessageBoxUIEx      <- __imp__XamShowMessageBoxUIEx
+//   dd_hook_XamShowMarketplaceUI       <- __imp__XamShowMarketplaceUI
 //   dd_hook_XamShowSigninUI            <- __imp__XamShowSigninUI
 //   dd_hook_XamUserGetSigninState      <- __imp__XamUserGetSigninState
 //   dd_hook_XamUserCheckPrivilege      <- __imp__XamUserCheckPrivilege

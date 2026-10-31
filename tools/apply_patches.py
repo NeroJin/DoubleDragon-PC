@@ -124,6 +124,7 @@ XBL_HOOKS = [
     "XamShowAchievementsUI",
     "XamShowMessageBoxUI",
     "XamShowMessageBoxUIEx",
+    "XamShowMarketplaceUI",
     "XamShowSigninUI",
     "XamUserGetSigninState",
     "XamUserCheckPrivilege",
