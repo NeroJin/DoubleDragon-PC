@@ -935,3 +935,19 @@ xenia_canary 表现一致，进一步说明是游戏自带的模拟器输出，�
 - toml 模板补 `user_language` / `ui_lang_simp` 说明。
 - 注意：启动器重新解包会整体替换 game/，之后需重跑
   `tools/fix_lang_assets.py` 和 `tools/t2s_stringtable.py` 重建 en-en/zh-cn 修复。
+
+### 18.1 画面文案也在 screens/*.xus 内嵌（实测修正）（10-31 早）
+- 用户实测发现「左菜单繁体、右描述简体」：菜单按钮文字**不在 StringTable.xus**，
+  而是编译进 `screens/<lang>/screen_*.xus` 的字符串（该文件同样被语言重定向读取，
+  之前整目录从 zh-cht 原样复制所以仍是繁体）。
+- screen_*.xus 与 StringTable 同构：XUIS 头（长度不统一，实测 10/12 字节）+
+  [u16BE len][UTF-16BE] 字符串流，键名（screen_main.button_xxx.Text）与值成对。
+- 修复：t2s_stringtable.py 新增 `convert_xus_strings()`——先探测头部长度（要求
+  解析干净走到 EOF），再对每条字符串做 OpenCC 等长替换；长度一变立即报错拒绝
+  （防 1->N 映射破坏偏移）。screens 40 个文件共改动 158 条，文件大小全部不变。
+- 全量校验：zh-cn 全部 42 个 .xus 再扫一遍，繁体残留 0。
+- 既有非问题：`ui\skins\<lang>\ButtonDis/Focus/Norm.png` 与
+  `screens\<lang>\Empire_Logo_Large.png` 请求失败在 zh-cht/en-en 下同样出现
+  （前者游戏回退到 skins 根目录的同名文件，后者全库无此文件、属死引用）。
+- 实机截图验证：主菜单/暂停选单全部简体（继续游戏/说明与选项/排行榜/成就/
+  其他功能/离开游戏/选择/返回）。

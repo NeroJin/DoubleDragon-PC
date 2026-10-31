@@ -71,6 +71,61 @@ def build(strings, version: int) -> bytes:
     return bytes(head) + bytes(body)
 
 
+def detect_header(data: bytes):
+    """screen_*.xus 的头部长度不统一（实测 10 或 12 字节），逐个试到能干净走到
+    文件末尾为止。返回 None 表示不是纯字符串流（有二进制块），调用方应原样复制。"""
+    for hdr in range(0x0A, 0x2A, 2):
+        off = hdr
+        ok = True
+        while off < len(data):
+            if off + 2 > len(data):
+                ok = False
+                break
+            (ln,) = struct.unpack(">H", data[off:off + 2])
+            if off + 2 + ln * 2 > len(data):
+                ok = False
+                break
+            try:
+                data[off + 2:off + 2 + ln * 2].decode("utf-16-be")
+            except UnicodeDecodeError:
+                ok = False
+                break
+            off += 2 + ln * 2
+        if ok and off == len(data):
+            return hdr
+    return None
+
+
+def convert_xus_strings(data: bytes, cc, name: str):
+    """把 XUIS 文件里的 UTF-16BE 字符串就地繁->简。
+
+    只做等长替换（逐字符 1:1），长度一变就报错拒绝——这样所有内部偏移、
+    头部声明的大小字段都无需改动。返回 (新数据, 改动条数)；不是纯字符串流
+    时返回 (None, 0)。"""
+    if data[:4] != MAGIC:
+        return None, 0
+    hdr = detect_header(data)
+    if hdr is None:
+        return None, 0
+    buf = bytearray(data)
+    off = hdr
+    changed = 0
+    while off < len(buf):
+        (ln,) = struct.unpack(">H", buf[off:off + 2])
+        start = off + 2
+        end = start + ln * 2
+        s = bytes(buf[start:end]).decode("utf-16-be")
+        t = cc.convert(s)
+        if t != s:
+            if len(t) != len(s):
+                raise SystemExit(f"{name}: 转换后长度变化 {s!r} -> {t!r}，"
+                                 "等长替换被破坏，需改脚本处理该条")
+            buf[start:end] = t.encode("utf-16-be")
+            changed += 1
+        off = end
+    return bytes(buf), changed
+
+
 def main() -> int:
     check_only = "--check" in sys.argv
     data = SRC.read_bytes()
@@ -126,8 +181,13 @@ def main() -> int:
         SKIN_LANG_DST.mkdir(parents=True, exist_ok=True)
         for f in SKIN_LANG_SRC.iterdir():
             if f.is_file():
-                (SKIN_LANG_DST / f.name).write_bytes(f.read_bytes())
-                print(f"已复制 skins(语言目录)/{f.name} -> zh-cn/")
+                out_bytes = f.read_bytes()
+                if f.suffix.lower() == ".xus":
+                    conv, _n = convert_xus_strings(out_bytes, cc, f.name)
+                    if conv is not None:
+                        out_bytes = conv
+                (SKIN_LANG_DST / f.name).write_bytes(out_bytes)
+                print(f"已复制/转换 skins(语言目录)/{f.name} -> zh-cn/")
 
     # screens/<lang>/：语言目录里是各语言的 .xus 画面与图，游戏还会按语言目录
     # 相对查找一批共享图（screens 根目录有，但 zh-cht 子目录缺）。
@@ -139,15 +199,23 @@ def main() -> int:
     SCR_DST = SCREENS / "zh-cn"
     if SCR_SRC.exists():
         SCR_DST.mkdir(parents=True, exist_ok=True)
+        xus_changed = 0
         for f in SCR_SRC.iterdir():
-            if f.is_file():
-                (SCR_DST / f.name).write_bytes(f.read_bytes())
+            if not f.is_file():
+                continue
+            out_bytes = f.read_bytes()
+            if f.suffix.lower() == ".xus":
+                conv, n = convert_xus_strings(out_bytes, cc, f.name)
+                if conv is not None:
+                    out_bytes = conv
+                    xus_changed += n
+            (SCR_DST / f.name).write_bytes(out_bytes)
         copied = len(list(SCR_DST.iterdir()))
         for f in SCREENS.iterdir():
             if f.is_file() and not (SCR_DST / f.name).exists():
                 (SCR_DST / f.name).write_bytes(f.read_bytes())
         print(f"已生成 screens/zh-cn/（{copied} 个语言文件 + 共享图补齐，共 "
-              f"{len(list(SCR_DST.iterdir()))} 个）")
+              f"{len(list(SCR_DST.iterdir()))} 个；画面内嵌文案改动 {xus_changed} 条）")
 
     return 0
 
