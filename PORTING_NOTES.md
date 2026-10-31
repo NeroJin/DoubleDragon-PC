@@ -1064,3 +1064,66 @@ name 字段**（`lwz r4,0(r11)`），为 0 → 该有序表里存在 name 为空
   浮层里全部描述为简体，图标/分数/flags 不受影响（覆盖只改文本）。
 - `.gitignore` 给该文件开了例外（`!/game/achievements.toml`）：它是自制补丁资产，
   不是原版素材。
+
+---
+
+## 22. 资源结构 / RomData / higfx（高清资源在哪）
+
+### 22.1 先澄清：它不是「通用街机模拟器」
+`build\Release\DoubleDragon.exe` 是 ReXGlue 把 XBLA 游戏 `game/default.xex`
+（Xbox 360 版《双截龙》）的 PPC 代码**重编译成的原生 x64 程序**，不是 MAME 那种
+"丢 ROM 进去就能跑"的模拟器。XBLA 版游戏代码内部自带一条"街机呈现"路径，运行时
+加载原版街机 ROM 并套用高清图形——所以观感上像"用模拟器跑街机 + 换了高清资源"，
+本质是该 XBLA 游戏自带的街机模式。
+
+### 22.2 游戏数据不在 git 里
+`game/` 整个目录被 `.gitignore` 忽略（只放行 `achievements.toml`）。这些文件由
+独立工程 `DoubleDragon.Loader`（纯 C# 的 STFS 只读解包器，**不含任何游戏数据**）
+从**用户自己拥有的 XBLA 包**（`.LIVE/.PIRS/.CON`）解到数据目录。所以 `src/`、`tools/`
+里 grep 不到 `higfx`/`RomData`——ROM 加载逻辑和模拟器都封在重编译后的 `xex` 二进制内。
+
+### 22.3 `game/RomData/` = 原版 1987 街机《双截龙》ROM 包 + 高清层
+原版街机数据（MAME 风格命名）：
+
+| 文件 | 解压后 | 含义 |
+|---|---|---|
+| `ddragon.cpu0` | 62 KB | 主 CPU(68k) 程序 |
+| `ddragon.cpu1` | 14 KB | 音 CPU(Z80) 程序 |
+| `ddragon.mcu` | 11 KB | 防拷贝单片机(68705) ROM |
+| `ddragon.snd0/1` | 47/48 KB | 音源采样 |
+| `ddragon.gfx0/1/2` | 64/512/1024 KB | **原版低清图形**（4bpp planar） |
+
+**高清资源 = `ddragon.higfx0/1/2`**：
+
+| 文件 | 解压后 | 相对对应 `gfx` |
+|---|---|---|
+| `ddragon.higfx0` | 1 MB | ×16（gfx0 64 KB） |
+| `ddragon.higfx1` | 8 MB | ×16（gfx1 512 KB） |
+| `ddragon.higfx2` | 16 MB | ×16（gfx2 1 MB） |
+
+×16 正好是"高清重绘"的体积数学：分辨率每轴 2× (8×8→16×16) × 位深 4bpp→8bpp
+（或 tile 数 ×4 × 位深 ×2），即细节量翻 16 倍。
+
+### 22.4 铁证（来自 `dd_dec.xex` 二进制字符串）
+- `_@game:\RomData\` —— 游戏运行时读 ROM 的虚拟路径
+- `ddragon`、`higfx0`、`higfx1`、`higfx2`、`cpu0`、`gfx0`、`snd0` —— 明确被引用
+- 路径映射：SDK `rex_app.cpp:260-265` + `runtime.h:182` 把 `game:\` 挂到磁盘的
+  `game_data_root`，所以 `_@game:\RomData\ddragon.higfx1` 落到 `game/RomData/ddragon.higfx1`
+
+### 22.5 `COMP` 容器格式（重要，别当 raw MAME ROM 处理）
+`gfx`/`higfx` 全部不是裸 ROM，而是自定义封装：
+```
+偏移 0-3 : "COMP" 魔数
+偏移 4-7 : 原文件大小（小端，higfx2=0x00174a05=1,526,277 与文件一致）
+偏移 8-11: 解压后大小（小端，higfx2=0x01000000=16,777,216）
+偏移 12+ : gzip 流（1f 8b 08）
+```
+解码：`gzip.decompress(raw[12:])` 即得像素数据。**注意**：解压后是移植方自定义的
+像素编码（非裸 MAME planar），没有移植方的编码器/调色板无法可靠还原成图——
+直接当 8bpp linear / 4bpp planar 解都会是噪点，这是编码未知，不是"不是图形"的证据。
+
+### 22.6 `game/` 下其它资源（非街机 ROM）
+- `UI/widescreen_bg_1280x720.png` —— 1280×720 宽屏菜单背景（真·HD 背景）
+- `UI/screens/`、`UI/skins/` —— 高清 UI 布局与皮肤
+- `UI/` 下 `zh-cn`/`zh-cht`/`ja-jp`/`en-en`… 本地化串表 + `arial.ttf` 字体
+- `game/*.png`（`GoodScore.png` 等）—— 成就/分级小图标（非游戏内美术）
