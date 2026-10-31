@@ -45,3 +45,5 @@ DoubleDragon.toml
 .workbuddy/
 # 运行时进程锁文件（内容为 PID，纯本地产物）
 run.pid
+# 本地发布包（含重编译 exe + SDK 运行时 dll，纯本地产物，不入库；按需手工分发）
+/dist/
