@@ -1154,8 +1154,12 @@ name 字段**（`lwz r4,0(r11)`），为 0 → 该有序表里存在 name 为空
 **不发布**：
 - `default.xex` / `dd_dec.xex`、`game/RomData/*`、`game/UI/*`、任何素材（玩家自备）；
 - `**/generated/`（反编译游戏专有代码，版权 + 须本地生成）；
-- ReXGlue SDK 运行时 DLL（`rexruntime.dll` / `rexgpu-xenos.dll`）：再分发许可需向 ReXGlue 确认，
-  预编译包若含它们须先取得授权，否则提示用户自行从 SDK 目录取。
+- ReXGlue SDK 运行时 DLL（`rexruntime.dll` / `rexgpu-xenos.dll`）：**可以随预编译包一起分发**。
+  理由：ReXGlue SDK 本体是 BSD-3 许可（GoldenEye README 明确："The ReXGlue SDK it builds
+  against has its own (BSD-3) license"），BSD-3 允许二进制再分发；且它**不是游戏版权素材**，
+  而是开源工具链运行时。社区普遍做法即如此（见 §23.5：Banjo-Tooie 构建产物即
+  `banjotooie.exe (+ rexruntime.dll)`，GoldenEye 预编译 Release 直接放 `ge.exe` 供运行）。
+  **唯一红线**仍是绝不附带游戏素材（xex/ROM/UI）。
 
 ### 23.4 法律灰度（须知）
 预编译 `DoubleDragon.exe` 内含由玩家 xex 静态重编译出的游戏逻辑（生成代码），这是重编译社区
@@ -1171,3 +1175,7 @@ name 字段**（`lwz r4,0(r11)`），为 0 → 该有序表里存在 name 为空
 - **EXIT1-Recomp**（FluffyQuack）：发 `exit1.exe`，下载不含游戏数据，需自备 EXIT XBLA 包 + 标题更新。
 - 反例：**The Simpsons Arcade**（sp00nznet）选择**不发 exe**，要求本机 codegen + 编译——我们当前
   源码-only 状态与之等价；采纳 GoldenEye 范式后改为"也可提供预编译 exe"。
+- **DLL 随包分发是常态**：上述预编译 Release 都自带运行所需运行时（Banjo-Tooie 构建产物原文
+  "produces banjotooie.exe (+ rexruntime.dll)"；另一 N64 系 Banjo-Tooie 项目 Windows 包明确
+  "carries the SDL2 and DXC DLLs the executable loads"）。即"exe + 它加载的 DLL"一并打包，
+  用户只需额外放入游戏素材即可运行。
