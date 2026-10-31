@@ -1,0 +1,107 @@
+[[achievements]]
+id = 6
+label = "得分王"
+description = "获得 20000 分。"
+unachieved_description = "获得 20000 分。"
+gamerscore = 5
+image_id = 5
+flags = 12
+
+[[achievements]]
+id = 7
+label = "火爆浪子"
+description = "在单人游戏中用一根炸药杀死两个敌人。"
+unachieved_description = "在单人游戏中用一根炸药杀死两个敌人。"
+gamerscore = 15
+image_id = 3
+flags = 12
+
+[[achievements]]
+id = 8
+label = "道具大师"
+description = "拾取以下所有道具：鞭子、球棒、小刀、油桶、箱子、炸药、岩石。"
+unachieved_description = "拾取以下所有道具：鞭子、球棒、小刀、油桶、箱子、炸药、岩石。"
+gamerscore = 5
+image_id = 1
+flags = 12
+
+[[achievements]]
+id = 9
+label = "三垒安打"
+description = "带着球棒通过第三关。"
+unachieved_description = "带着球棒通过第三关。"
+gamerscore = 20
+image_id = 11
+flags = 12
+
+[[achievements]]
+id = 10
+label = "滴水不沾"
+description = "在不落水的状况下通过第三关的桥梁。"
+unachieved_description = "在不落水的状况下通过第三关的桥梁。"
+gamerscore = 10
+image_id = 9
+flags = 12
+
+[[achievements]]
+id = 11
+label = "闪避大师"
+description = "在单人游戏中不被敌人击中，并通过第一关。"
+unachieved_description = "在单人游戏中不被敌人击中，并通过第一关。"
+gamerscore = 20
+image_id = 12
+flags = 12
+
+[[achievements]]
+id = 12
+label = "入侵基地"
+description = "在双打游戏中保持未接关的状态并到达第四关。"
+unachieved_description = "在双打游戏中保持未接关的状态并到达第四关。"
+gamerscore = 15
+image_id = 7
+flags = 12
+
+[[achievements]]
+id = 13
+label = "大开杀戒"
+description = "在单人游戏中，击败最终魔王前的所有小兵。"
+unachieved_description = "在单人游戏中，击败最终魔王前的所有小兵。"
+gamerscore = 15
+image_id = 8
+flags = 12
+
+[[achievements]]
+id = 14
+label = "陷阱大师"
+description = "躲过第四关的墙壁陷阱。"
+unachieved_description = "躲过第四关的墙壁陷阱。"
+gamerscore = 20
+image_id = 10
+flags = 12
+
+[[achievements]]
+id = 15
+label = "赤手空拳"
+description = "在不使用任何道具的状况下全破单人游戏。"
+unachieved_description = "在不使用任何道具的状况下全破单人游戏。"
+gamerscore = 20
+image_id = 2
+flags = 12
+
+[[achievements]]
+id = 16
+label = "掳获芳心"
+description = "在双打游戏破关后击败另一位玩家。"
+unachieved_description = "在双打游戏破关后击败另一位玩家。"
+gamerscore = 20
+image_id = 4
+flags = 12
+
+[[achievements]]
+id = 17
+label = "英雄"
+description = "在保持未接关的状态下全破单人游戏。"
+unachieved_description = "在保持未接关的状态下全破单人游戏。"
+gamerscore = 35
+image_id = 6
+flags = 12

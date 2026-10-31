@@ -26,6 +26,8 @@ DoubleDragon.toml
 # game/ 下只保留 .gitkeep 占位，其余全部忽略。
 /game/*
 !/game/.gitkeep
+# 自制补丁资产（非原版素材）：成就简体覆盖层，由 tools/gen_achievements_toml.py 生成
+!/game/achievements.toml
 *.xex
 *.xpr
 *.bik

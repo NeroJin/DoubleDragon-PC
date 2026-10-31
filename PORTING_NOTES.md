@@ -1049,3 +1049,18 @@ name 字段**（`lwz r4,0(r11)`），为 0 → 该有序表里存在 name 为空
 **实测**：成就浮层打开（0/12、0G/200G，图标与中文名/描述齐全）→ B 关闭 →
 菜单继续可用；重复打开、F7 开关均稳定；XBOX LIVE 游戏/排行榜的"必须登录"
 消息框维持原样（用户确认保留）。
+
+**简体化（2026-10-31 追加）**：XDBF 里的成就文本是原版繁体（label 已是简体，
+描述还是「獲得 20000 分 / 單人遊戲」这类）。SDK 的 `AchievementManager` 有
+`LoadMetadataFile()`——用 `[[achievements]]` TOML 按 id 合并覆盖，所以不在运行时
+做字符转换，直接离线生成简体覆盖层：
+
+- 取原文：临时在 `achievements_dialog.h` 构造函数里遍历 `ListAchievements()`
+  写 `achievements_dump.txt`（id / gamerscore / image_id / flags / label /
+  description / unachieved_description），取完即删。
+- 生成：`tools/gen_achievements_toml.py`（opencc `t2s` + 少量词组修正
+  「帶著→带着」）→ `game/achievements.toml`。
+- 运行时日志确认：`Loaded achievements.toml: 12 entries from ...\game\achievements.toml`，
+  浮层里全部描述为简体，图标/分数/flags 不受影响（覆盖只改文本）。
+- `.gitignore` 给该文件开了例外（`!/game/achievements.toml`）：它是自制补丁资产，
+  不是原版素材。
