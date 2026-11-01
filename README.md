@@ -10,6 +10,7 @@
 | 路径 | 说明 |
 |---|---|
 | `src/` | 手写代码：入口 `main.cpp`、`DoubleDragon_app.h`（App 定制钩子） |
+| `loader/` | `DoubleDragonLoader` 启动器/解包工具源码（C#/.NET WinForms，需 Visual Studio 构建） |
 | `game/` | **游戏素材目录**（不入库）。把解包后的 `default.xex` 及素材直接拷进来 |
 | `DoubleDragon_manifest.toml` | codegen 配置：`game_root = "game"`、入口 `game/default.xex` |
 | `generated/` | codegen 产出（`rexglue.cmake` + `default/*.cpp`）。**不入库**：从机器码反编译的游戏专有代码有版权，且必须自备原始 xex 本地生成 |
