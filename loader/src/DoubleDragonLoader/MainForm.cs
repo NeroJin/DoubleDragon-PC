@@ -1,8 +1,11 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -25,6 +28,8 @@ namespace DoubleDragon.Loader
         private const string ManagedAaIgnored = "none";
         /// <summary>简体中文资源包目录（随 Loader 分发，位于 exe 同目录）。</summary>
         private const string LangPayloadDir = "lang_zhcn";
+        /// <summary>简体 .xus 字节补丁：以游戏自带 zh-cht 为基底复原 zh-cn，替代整包分发。</summary>
+        private const string PatchFileName = "patch_v1.bin";
 
         /// <summary>
         /// 窗口尺寸预设（仅窗口模式生效，写入 window_width/height）。
@@ -817,9 +822,10 @@ namespace DoubleDragon.Loader
         /// </para>
         /// <para>
         /// 重建方式（manifest.txt 逐条描述 236 个目标文件）：
-        /// 类型 <c>S</c> —— 42 个有差异的 .xus（简体串表 + 内嵌简体文字的界面定义），随 Loader 携带，直接写入；
+        /// 类型 <c>S</c> —— 42 个有差异的 .xus，改为"补丁式"：读游戏自带的同名 zh-cht 作基底，
+        ///   校验基底 MD5 后按 patch_v1.bin 的 (offset, bytes) 就地改写并写到 zh-cn，不再随包携带整包 .xus；
         /// 类型 <c>N</c> —— 其余 194 个中性图片/音频，运行时从用户自己解开的游戏包（中性路径）拷贝，
-        /// 不随 Loader 分发任何原始游戏素材。
+        ///   不随 Loader 分发任何原始游戏素材。
         /// </para>
         /// <para>幂等：已存在则覆盖；注入失败不阻断启动（游戏回退繁体，并写 lang_inject.log）。</para>
         /// </summary>
@@ -830,6 +836,12 @@ namespace DoubleDragon.Loader
             string payloadDir = Path.Combine(_baseDir, LangPayloadDir);
             string manifestPath = Path.Combine(payloadDir, "manifest.txt");
             if (!File.Exists(manifestPath)) return; // 资源包缺失：静默回退繁体
+
+            // 补丁缺失（旧包）时 S 类会被跳过，游戏对该屏回退繁体，不影响启动。
+            string patchPath = Path.Combine(payloadDir, PatchFileName);
+            Dictionary<string, PatchEntry> patches = File.Exists(patchPath)
+                ? LoadPatch(patchPath)
+                : new Dictionary<string, PatchEntry>(StringComparer.OrdinalIgnoreCase);
 
             string uiDir = Path.Combine(_dataDir, "UI");
             try
@@ -843,20 +855,19 @@ namespace DoubleDragon.Loader
                     string zhcnRel = parts[0].Replace('/', Path.DirectorySeparatorChar);
                     string target = Path.Combine(uiDir, zhcnRel);
 
-                    string source;
                     if (parts[1] == "S")
                     {
-                        source = Path.Combine(payloadDir, zhcnRel);
-                        if (!File.Exists(source)) continue;
+                        // 简体 .xus：以游戏自带 zh-cht 为基底套字节补丁生成。
+                        MaterializePatchedXus(zhcnRel, target, patches, uiDir);
+                        continue;
                     }
-                    else // "N"：从用户解包的中性文件拷贝
-                    {
-                        if (parts.Length < 3) continue;
-                        string neutralRel = parts[2].Replace('/', Path.DirectorySeparatorChar);
-                        if (string.IsNullOrEmpty(neutralRel)) continue;
-                        source = Path.Combine(uiDir, neutralRel);
-                        if (!File.Exists(source)) continue; // 解包不完整则跳过该项
-                    }
+
+                    // "N"：从用户解包的中性文件拷贝
+                    if (parts.Length < 3) continue;
+                    string neutralRel = parts[2].Replace('/', Path.DirectorySeparatorChar);
+                    if (string.IsNullOrEmpty(neutralRel)) continue;
+                    string source = Path.Combine(uiDir, neutralRel);
+                    if (!File.Exists(source)) continue; // 解包不完整则跳过该项
 
                     Directory.CreateDirectory(Path.GetDirectoryName(target));
                     File.Copy(source, target, true);
@@ -872,6 +883,114 @@ namespace DoubleDragon.Loader
                 }
                 catch { }
             }
+        }
+
+        /// <summary>
+        /// 以 game/UI 下同名 zh-cht 为基底，套用补丁还原 zh-cn 并写出。
+        /// <para>
+        /// 基底长度/MD5 必须与造补丁时一致，否则偏移会错位。不符时退化为直接复制繁体到 zh-cn
+        /// （该屏显示繁体，但至少有文件，避免整屏加载失败）；基底缺失则跳过。
+        /// </para>
+        /// </summary>
+        private static void MaterializePatchedXus(
+            string zhcnRel, string target, IDictionary<string, PatchEntry> patches, string uiDir)
+        {
+            if (patches == null || patches.Count == 0) return;
+
+            PatchEntry entry;
+            if (!patches.TryGetValue(zhcnRel, out entry)) return;
+
+            string basePath = Path.Combine(uiDir, zhcnRel.Replace("zh-cn", "zh-cht"));
+            if (!File.Exists(basePath)) return;
+
+            byte[] data = File.ReadAllBytes(basePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(target));
+
+            bool ok = data.Length == entry.BaseSize && Md5Equals(data, entry.BaseMd5);
+            if (ok)
+            {
+                foreach (ByteRun run in entry.Runs)
+                {
+                    if (run.Offset < 0 || run.Offset + run.Data.Length > data.Length) { ok = false; break; }
+                    Buffer.BlockCopy(run.Data, 0, data, run.Offset, run.Data.Length);
+                }
+            }
+
+            if (ok)
+                File.WriteAllBytes(target, data);
+            else
+                File.Copy(basePath, target, true); // 基底版本不符：退化为繁体，保证文件存在
+        }
+
+        private static bool Md5Equals(byte[] data, byte[] expected)
+        {
+            if (expected == null || expected.Length != 16) return false;
+            using (MD5 md5 = MD5.Create())
+            {
+                byte[] hash = md5.ComputeHash(data);
+                for (int i = 0; i < 16; i++)
+                    if (hash[i] != expected[i]) return false;
+                return true;
+            }
+        }
+
+        /// <summary>patch_v1.bin 中的一段"偏移 + 新字节"。</summary>
+        private sealed class ByteRun
+        {
+            public int Offset;
+            public byte[] Data;
+        }
+
+        /// <summary>patch_v1.bin 中单个目标文件的补丁条目。</summary>
+        private sealed class PatchEntry
+        {
+            public int BaseSize;
+            public byte[] BaseMd5;
+            public ByteRun[] Runs;
+        }
+
+        /// <summary>
+        /// 解析 DDLP v1 补丁：magic{4} ver{u16} count{u16}；
+        /// 逐文件 pathLen{u16} path{utf8} baseSize{u32} baseMd5{16} runCount{u16}；
+        /// 逐段 offset{u32} len{u16} data。
+        /// </summary>
+        private static Dictionary<string, PatchEntry> LoadPatch(string path)
+        {
+            var map = new Dictionary<string, PatchEntry>(StringComparer.OrdinalIgnoreCase);
+            byte[] b = File.ReadAllBytes(path);
+            if (b.Length < 8 || b[0] != (byte)'D' || b[1] != (byte)'D' || b[2] != (byte)'L' || b[3] != (byte)'P')
+                return map;
+
+            int pos = 4;
+            ushort ver = BitConverter.ToUInt16(b, pos); pos += 2;
+            ushort count = BitConverter.ToUInt16(b, pos); pos += 2;
+            if (ver != 1) return map;
+
+            for (int i = 0; i < count; i++)
+            {
+                ushort plen = BitConverter.ToUInt16(b, pos); pos += 2;
+                string rel = Encoding.UTF8.GetString(b, pos, plen).Replace('/', Path.DirectorySeparatorChar);
+                pos += plen;
+
+                var entry = new PatchEntry();
+                entry.BaseSize = (int)BitConverter.ToUInt32(b, pos); pos += 4;
+                entry.BaseMd5 = new byte[16];
+                Buffer.BlockCopy(b, pos, entry.BaseMd5, 0, 16); pos += 16;
+
+                ushort runCount = BitConverter.ToUInt16(b, pos); pos += 2;
+                entry.Runs = new ByteRun[runCount];
+                for (int r = 0; r < runCount; r++)
+                {
+                    var run = new ByteRun();
+                    run.Offset = (int)BitConverter.ToUInt32(b, pos); pos += 4;
+                    ushort dlen = BitConverter.ToUInt16(b, pos); pos += 2;
+                    run.Data = new byte[dlen];
+                    Buffer.BlockCopy(b, pos, run.Data, 0, dlen); pos += dlen;
+                    entry.Runs[r] = run;
+                }
+                map[rel] = entry;
+            }
+            return map;
         }
 
         // ================================================================ 选项类型

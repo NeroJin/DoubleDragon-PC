@@ -58,7 +58,7 @@ D:\ReverseTools\ReXGlueSDK\bin\rexglue.exe init --project-name DoubleDragon --xe
 `build/Release/` 下需要：`DoubleDragon.exe`、`rexruntime.dll`、`rexgpu-xenos.dll`、`game/`、`DoubleDragon.toml`（首次运行自动生成）。
 两个 rexglue 运行时 dll 由 SDK 提供（`rexglue_setup_target(... GPU_PLUGINS xenos)` 会把 xenos 插件拷到 exe 旁），**未随仓库分发**——再分发许可需向 ReXGlueX 确认。
 
-> **简体中文**：启动器（`loader/`）在选「简体中文」启动时，会自动在 `game/ui/zh-cn/` 重建简体资源——42 个内嵌简体文字的 `.xus` 随启动器分发（位于 `loader/.../lang_zhcn/`），其余中性图片/音频从用户解开的游戏包就地拷贝，**无需手动准备 `zh-cn` 资源**。游戏侧 `lang_redirect` 再把内存里的 `zh-cht` 改写成 `zh-cn` 读取。
+> **简体中文**：启动器（`loader/`）在选「简体中文」启动时，会自动在 `game/ui/zh-cn/` 重建简体资源——42 个 `.xus` 以**字节补丁**形式随启动器分发（`loader/.../lang_zhcn/patch_v1.bin`，约 8.7 KB），启动时以游戏自带的同名 `zh-cht` 为基底、校验后按 `(偏移, 新字节)` 就地还原出 `zh-cn`；其余中性图片/音频从用户解开的游戏包就地拷贝，**无需手动准备 `zh-cn` 资源**。游戏侧 `lang_redirect` 再把内存里的 `zh-cht` 改写成 `zh-cn` 读取。
 
 ## 获取与发布（GoldenEye 范式）
 
