@@ -26,4 +26,13 @@
     <ProjectReference Include="..\DoubleDragonUnpack\DoubleDragonUnpack.csproj" />
   </ItemGroup>
 
+  <!-- 简体中文资源包：随 Loader 输出到 exe 同目录（lang_zhcn/）。
+       其中 42 个有差异的 .xus 随包携带，manifest.txt 描述的其余中性文件由 Loader
+       在启动时从用户解开的游戏包拷贝，不在此分发任何原始游戏素材。 -->
+  <ItemGroup>
+    <Content Include="lang_zhcn\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

@@ -23,6 +23,8 @@ namespace DoubleDragon.Loader
         private const string TomlName = "DoubleDragon.toml";
         private const string DataFolderName = "game";
         private const string ManagedAaIgnored = "none";
+        /// <summary>简体中文资源包目录（随 Loader 分发，位于 exe 同目录）。</summary>
+        private const string LangPayloadDir = "lang_zhcn";
 
         /// <summary>
         /// 窗口尺寸预设（仅窗口模式生效，写入 window_width/height）。
@@ -787,6 +789,9 @@ namespace DoubleDragon.Loader
         {
             try
             {
+                // 选了简体中文则在启动前把 game/UI/zh-cn 补齐（详见 EnsureSimplifiedChinese）。
+                EnsureSimplifiedChinese();
+
                 Process.Start(new ProcessStartInfo(_exePath)
                 {
                     // 工作目录必须是 exe 所在目录：日志和 toml 都按它定位。
@@ -799,6 +804,73 @@ namespace DoubleDragon.Loader
             {
                 MessageBox.Show(this, L10n.Format("LaunchFailed", ex.Message), Text,
                                 MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        // ================================================================ 简体中文注入
+
+        /// <summary>
+        /// 选了简体中文（cvar ui_lang_simp=true）时，在拉起游戏前把 game/UI/zh-cn 树补齐。
+        /// <para>
+        /// 机制：游戏侧 <c>lang_redirect</c> 会把内存里的语言目录名 zh-cht 改写成 zh-cn，于是改读
+        /// game/ui/zh-cn/ 下的资源。但 XBLA 原包没有 zh-cn，解包后也不会有，所以这里在本地重建它。
+        /// </para>
+        /// <para>
+        /// 重建方式（manifest.txt 逐条描述 236 个目标文件）：
+        /// 类型 <c>S</c> —— 42 个有差异的 .xus（简体串表 + 内嵌简体文字的界面定义），随 Loader 携带，直接写入；
+        /// 类型 <c>N</c> —— 其余 194 个中性图片/音频，运行时从用户自己解开的游戏包（中性路径）拷贝，
+        /// 不随 Loader 分发任何原始游戏素材。
+        /// </para>
+        /// <para>幂等：已存在则覆盖；注入失败不阻断启动（游戏回退繁体，并写 lang_inject.log）。</para>
+        /// </summary>
+        private void EnsureSimplifiedChinese()
+        {
+            if (!_toml.GetBool("ui_lang_simp", false)) return;
+
+            string payloadDir = Path.Combine(_baseDir, LangPayloadDir);
+            string manifestPath = Path.Combine(payloadDir, "manifest.txt");
+            if (!File.Exists(manifestPath)) return; // 资源包缺失：静默回退繁体
+
+            string uiDir = Path.Combine(_dataDir, "UI");
+            try
+            {
+                foreach (string raw in File.ReadAllLines(manifestPath))
+                {
+                    if (string.IsNullOrWhiteSpace(raw)) continue;
+                    string[] parts = raw.Split('|');
+                    if (parts.Length < 2) continue;
+
+                    string zhcnRel = parts[0].Replace('/', Path.DirectorySeparatorChar);
+                    string target = Path.Combine(uiDir, zhcnRel);
+
+                    string source;
+                    if (parts[1] == "S")
+                    {
+                        source = Path.Combine(payloadDir, zhcnRel);
+                        if (!File.Exists(source)) continue;
+                    }
+                    else // "N"：从用户解包的中性文件拷贝
+                    {
+                        if (parts.Length < 3) continue;
+                        string neutralRel = parts[2].Replace('/', Path.DirectorySeparatorChar);
+                        if (string.IsNullOrEmpty(neutralRel)) continue;
+                        source = Path.Combine(uiDir, neutralRel);
+                        if (!File.Exists(source)) continue; // 解包不完整则跳过该项
+                    }
+
+                    Directory.CreateDirectory(Path.GetDirectoryName(target));
+                    File.Copy(source, target, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                // 注入失败不阻断启动：游戏仍能跑（回退繁体）。记录到日志便于排查。
+                try
+                {
+                    File.WriteAllText(Path.Combine(_baseDir, "lang_inject.log"),
+                        "[lang] 简体资源注入未完成: " + ex.GetType().Name + ": " + ex.Message);
+                }
+                catch { }
             }
         }
 
