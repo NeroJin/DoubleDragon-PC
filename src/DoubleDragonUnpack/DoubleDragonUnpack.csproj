@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <RootNamespace>DoubleDragon.Unpack</RootNamespace>
+    <AssemblyName>DoubleDragonUnpack</AssemblyName>
+    <Version>1.0.0</Version>
+    <Product>Double Dragon Unpack</Product>
+    <Description>Xbox 360 STFS（LIVE/PIRS/CON）只读解包库</Description>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+</Project>

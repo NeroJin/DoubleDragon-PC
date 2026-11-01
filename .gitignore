@@ -1,0 +1,36 @@
+# ---- 构建产物 ----
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+*.pdb
+*.dll
+*.exe
+*.exe.config
+
+# 但源码里的配置文件要留
+!src/**/App.config
+!src/**/app.manifest
+
+# ---- 编辑器 / VS 缓存 ----
+.vs/
+*.user
+*.suo
+*.userprefs
+.vscode/
+
+# ---- 运行时产物 ----
+# 启动器会把游戏解包到 exe 同级的 game/ 目录，
+# 那是游戏本体内容，绝对不能进仓库。
+game/
+logs/
+*.toml.log
+
+# ---- 游戏资源（版权，任何情况都不入库）----
+*.xex
+*.xpr
+*.bik
+*.wmv
+*.xma
+*.xnb
+default.xex
