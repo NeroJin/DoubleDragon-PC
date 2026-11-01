@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <RootNamespace>DoubleDragon.Loader</RootNamespace>
+    <AssemblyName>DoubleDragonLoader</AssemblyName>
+    <Version>1.0.0</Version>
+    <Product>Double Dragon Launcher</Product>
+    <Description>Double Dragon 启动器：解包 STFS 资源、写画质配置、拉起游戏</Description>
+    <!-- 游戏与 rexruntime 都是 x64，启动器跟着走 x64 -->
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+
+  <!-- 显式引用，不依赖 Microsoft.NET.Sdk.WindowsDesktop（net48 下行为更确定） -->
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DoubleDragonUnpack\DoubleDragonUnpack.csproj" />
+  </ItemGroup>
+
+</Project>
